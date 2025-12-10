@@ -1,0 +1,174 @@
+{% extends "core/base.html" %}
+
+{% block title %}Styloria Admin Dashboard{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+
+  <h1 class="mb-4">Styloria Admin Dashboard</h1>
+
+  <!-- Top-level stats -->
+  <div class="row">
+    <div class="col-md-3 mb-3">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title">Users</h5>
+          <p class="card-text display-6">{{ total_users }}</p>
+          <small class="text-muted">Registered customers</small>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-3 mb-3">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title">Providers</h5>
+          <p class="card-text display-6">{{ total_providers }}</p>
+          <small class="text-muted">Active barbers & braiders</small>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-3 mb-3">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title">Bookings</h5>
+          <p class="card-text display-6">{{ total_bookings }}</p>
+          <small class="text-muted">
+            Pending: {{ pending_bookings }} |
+            Completed: {{ completed_bookings }}
+          </small>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-3 mb-3">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title">Revenue</h5>
+          <p class="card-text display-6">${{ total_revenue }}</p>
+          <small class="text-muted">Sum of completed bookings</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recent bookings -->
+  <div class="row mt-4">
+    <div class="col-md-6 mb-4">
+      <div class="card shadow-sm">
+        <div class="card-header">
+          Recent Bookings
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm mb-0">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>User</th>
+                <th>Provider</th>
+                <th>Status</th>
+                <th>Price</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for b in recent_bookings %}
+              <tr>
+                <td>{{ b.id }}</td>
+                <td>{{ b.user.username }}</td>
+                <td>
+                  {% if b.service_provider %}
+                    {{ b.service_provider.user.username }}
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+                <td>{{ b.status }}</td>
+                <td>{{ b.estimated_price|default:"-" }}</td>
+              </tr>
+              {% empty %}
+              <tr>
+                <td colspan="5" class="text-center py-3">No bookings yet.</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent users -->
+    <div class="col-md-6 mb-4">
+      <div class="card shadow-sm">
+        <div class="card-header">
+          Recent Users
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm mb-0">
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Joined</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for u in recent_users %}
+              <tr>
+                <td>{{ u.username }}</td>
+                <td>{{ u.role }}</td>
+                <td>{{ u.date_joined }}</td>
+              </tr>
+              {% empty %}
+              <tr>
+                <td colspan="3" class="text-center py-3">No users yet.</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recent reviews -->
+  <div class="row mt-2">
+    <div class="col-md-12 mb-4">
+      <div class="card shadow-sm">
+        <div class="card-header">
+          Recent Reviews
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm mb-0">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Provider</th>
+                <th>Rating</th>
+                <th>Comment</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in recent_reviews %}
+              <tr>
+                <td>{{ r.user.username }}</td>
+                <td>{{ r.service_provider.user.username }}</td>
+                <td>{{ r.rating }}</td>
+                <td>{{ r.comment|truncatechars:60 }}</td>
+                <td>{{ r.created_at }}</td>
+              </tr>
+              {% empty %}
+              <tr>
+                <td colspan="5" class="text-center py-3">No reviews yet.</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

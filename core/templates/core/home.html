@@ -1,0 +1,45 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Home - Styloria{% endblock %}
+
+{% block content %}
+<!-- Hero Section -->
+<div class="bg-gradient-to-r from-blue-600 to-purple-600 text-white">
+    <div class="max-w-7xl mx-auto px-4 py-24 text-center">
+        <h1 class="text-5xl font-bold mb-6">Welcome to Styloria</h1>
+        <p class="text-xl mb-8 max-w-2xl mx-auto">
+            Transform your business with our powerful, real-time platform
+        </p>
+        <div class="space-x-4">
+            <a href="/signup/" class="bg-white text-blue-600 px-8 py-3 rounded-lg font-semibold hover:bg-gray-100">
+                Get Started
+            </a>
+            <a href="/dashboard/" class="border-2 border-white px-8 py-3 rounded-lg font-semibold hover:bg-white hover:text-blue-600">
+                View Dashboard
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Features Section -->
+<div class="max-w-7xl mx-auto px-4 py-16">
+    <h2 class="text-3xl font-bold text-center mb-12">Powerful Features</h2>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div class="bg-white p-8 rounded-lg shadow-lg">
+            <div class="text-blue-600 text-4xl mb-4">⚡</div>
+            <h3 class="text-xl font-semibold mb-3">Real-time Notifications</h3>
+            <p class="text-gray-600">Get instant updates with WebSocket-powered notifications</p>
+        </div>
+        <div class="bg-white p-8 rounded-lg shadow-lg">
+            <div class="text-purple-600 text-4xl mb-4">🔒</div>
+            <h3 class="text-xl font-semibold mb-3">Secure Authentication</h3>
+            <p class="text-gray-600">JWT tokens and two-factor authentication for maximum security</p>
+        </div>
+        <div class="bg-white p-8 rounded-lg shadow-lg">
+            <div class="text-green-600 text-4xl mb-4">📊</div>
+            <h3 class="text-xl font-semibold mb-3">Smart Dashboard</h3>
+            <p class="text-gray-600">Track your metrics and activity in one unified interface</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

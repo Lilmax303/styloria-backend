@@ -1,0 +1,97 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Dashboard - Styloria{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+    <!-- Welcome Header -->
+    <div class="bg-white rounded-lg shadow p-6 mb-8">
+        <h1 class="text-3xl font-bold text-gray-800">Welcome back, {{ user.username }}!</h1>
+        <p class="text-gray-600 mt-2">Here's what's happening with your account today.</p>
+    </div>
+
+    <!-- Dashboard Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- User Info Card -->
+        <div class="bg-white rounded-lg shadow p-6">
+            <h3 class="text-lg font-semibold mb-4">Account Details</h3>
+            <div class="space-y-2 text-sm">
+                <p><strong>Email:</strong> {{ user.email }}</p>
+                <p><strong>Member since:</strong> {{ user.date_joined|date:"F j, Y" }}</p>
+                <p><strong>Status:</strong> 
+                    <span class="px-2 py-1 bg-green-100 text-green-800 rounded-full">
+                        Active
+                    </span>
+                </p>
+            </div>
+        </div>
+
+        <!-- Notifications Card -->
+        <div class="bg-white rounded-lg shadow p-6">
+            <h3 class="text-lg font-semibold mb-4">Recent Notifications</h3>
+            <div id="notification-list" class="space-y-2 text-sm text-gray-600">
+                <p>No new notifications</p>
+            </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="bg-white rounded-lg shadow p-6">
+            <h3 class="text-lg font-semibold mb-4">Quick Actions</h3>
+            <div class="space-y-2">
+                <button onclick="testNotification()" class="w-full bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                    Test Notification
+                </button>
+                <a href="/admin/" class="block text-center border border-gray-300 px-4 py-2 rounded hover:bg-gray-50">
+                    Admin Panel
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Activity Section -->
+    <div class="bg-white rounded-lg shadow p-6 mt-8">
+        <h3 class="text-lg font-semibold mb-4">Recent Activity</h3>
+        <div class="text-gray-600 text-sm">
+            <p>Your activity feed will appear here.</p>
+        </div>
+    </div>
+</div>
+
+<script>
+// Initialize WebSocket on page load
+{% if user.is_authenticated %}
+    connectNotifications('{{ user.id }}');
+{% endif %}
+
+// Test notification function
+function testNotification() {
+    fetch('/api/test-notification/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrftoken')
+        }
+    }).then(response => {
+        if (response.ok) {
+            console.log('Test notification triggered');
+        }
+    });
+}
+
+// CSRF token helper
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+</script>
+{% endblock %}

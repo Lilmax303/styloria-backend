@@ -1,0 +1,76 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Styloria{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'css/main.css' %}">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // WebSocket notification handler
+        function connectNotifications(userId) {
+            const wsUrl = `ws://127.0.0.1:8000/ws/notifications/${userId}/`;
+            const ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                showNotification(data.message);
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+        
+        function showNotification(message) {
+            // Create and show a toast notification
+            const toast = document.createElement('div');
+            toast.className = 'fixed top-4 right-4 bg-blue-600 text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-pulse';
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 5000);
+        }
+    </script>
+</head>
+<body class="bg-gray-50">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <a href="/" class="text-xl font-bold text-blue-600">Styloria</a>
+                </div>
+                <div class="flex items-center space-x-4">
+                    {% if user.is_authenticated %}
+                        <a href="/dashboard/" class="text-gray-700 hover:text-blue-600">Dashboard</a>
+                        <a href="/logout/" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">Logout</a>
+                    {% else %}
+                        <a href="/login/" class="text-gray-700 hover:text-blue-600">Login</a>
+                        <a href="/signup/" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Sign Up</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-gray-800 text-white mt-12">
+        <div class="max-w-7xl mx-auto px-4 py-6">
+            <p class="text-center">&copy; 2025 Styloria. All rights reserved.</p>
+        </div>
+    </footer>
+</body>
+</html>

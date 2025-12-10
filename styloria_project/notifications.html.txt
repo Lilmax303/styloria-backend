@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<h1>Notifications</h1>
+
+<div id="list">Loading...</div>
+
+<script>
+const token = "PASTE-YOUR-TOKEN-HERE";
+
+async function loadNotifications() {
+    const res = await fetch("http://127.0.0.1:8000/notifications/", {
+        headers: {
+            "Authorization": "Bearer " + token
+        }
+    });
+
+    const data = await res.json();
+
+    const list = document.getElementById("list");
+    list.innerHTML = "";
+
+    data.forEach(n => {
+        const div = document.createElement("div");
+        div.innerHTML = `
+            <p>
+                <strong>${n.message}</strong><br>
+                Read: ${n.read}<br>
+                <button onclick="markRead(${n.id})">Mark as read</button>
+            </p>
+            <hr>
+        `;
+        list.appendChild(div);
+    });
+}
+
+async function markRead(id) {
+    await fetch(`http://127.0.0.1:8000/notifications/read/${id}/`, {
+        method: "POST",
+        headers: {
+            "Authorization": "Bearer " + token
+        }
+    });
+
+    loadNotifications();
+}
+
+loadNotifications();
+</script>
+
+</body>
+</html>
