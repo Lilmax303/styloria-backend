@@ -4,50 +4,51 @@ from django.contrib import admin
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
     TokenRefreshView,
 )
 from core import views as core_views
-from two_factor.urls import urlpatterns as tf_urls
+from core.auth_views import EmailOrUsernameTokenObtainPairView
 from core.views import list_notifications, mark_as_read, unread_count
 
-# Create a router to automatically generate API routes
 router = DefaultRouter()
 router.register(r'users', core_views.UserViewSet)
 router.register(r'service_providers', core_views.ServiceProviderViewSet)
 router.register(r'service_requests', core_views.ServiceRequestViewSet)
-router.register(r'reviews', core_views.ReviewViewSet)  # Registered in step 16.3
+router.register(r'reviews', core_views.ReviewViewSet)
+router.register(r'chats', core_views.ChatThreadViewSet, basename='chats')
+router.register(r'support_chats', core_views.SupportThreadViewSet, basename='support_chats')
 
 urlpatterns = [
-    # Admin panel URL
     path('admin/', admin.site.urls),
 
-    # Core app URLs (homepage, etc.)
     path('', include('core.urls')),
 
-    # API endpoints (automatically generated from viewsets)
     path('api/', include(router.urls)),
-
-    # Two-factor auth URLs
-    path('accounts/two_factor/', include(tf_urls)),
 
     # Notification endpoints
     path("notifications/read/<int:pk>/", mark_as_read),
     path("notifications/", list_notifications, name="list_notifications"),
     path("notifications/unread/count/", unread_count),
 
-    # JWT authentication endpoints
-    path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    # JWT auth (username or email)
+    path('api/token/', EmailOrUsernameTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
-    # MFA endpoints
+    # MFA endpoints (your custom Twilio-based flow)
     path('api/mfa/start/', core_views.mfa_start, name='mfa_start'),
     path('api/mfa/verify/', core_views.mfa_verify, name='mfa_verify'),
 
-    # Stripe payment endpoint
+    # Stripe
     path('api/create_payment/', core_views.create_payment, name='create_payment'),
 
+    # Admin payout tooling
+    path('api/admin/payouts/pending/', core_views.admin_pending_payouts, name='admin_pending_payouts'),
+    path('api/admin/payouts/<int:pk>/release/', core_views.admin_release_payout, name='admin_release_payout'),
 
-    # Optionally, if you’re using Django’s default login/logout views
+    # Provider earnings (for providers in the app)
+    path('api/providers/earnings/summary/', core_views.provider_earnings_summary, name='provider_earnings_summary'),
+    path('api/providers/earnings/report/', core_views.provider_earnings_report_pdf, name='provider_earnings_report_pdf'),
+
+    # Django's default HTML auth views (optional, under /accounts/)
     path('accounts/', include('django.contrib.auth.urls')),
 ]

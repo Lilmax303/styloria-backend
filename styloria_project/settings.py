@@ -1,6 +1,4 @@
-"""
-Django settings for styloria_project project.
-"""
+"""Django settings for styloria_project project."""
 
 import os
 from pathlib import Path
@@ -20,11 +18,21 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'dev-secret-key-change-me')
 # SECURITY WARNING: don’t run with debug turned on in production!
 DEBUG = os.getenv('DJANGO_DEBUG', 'True').lower() == 'true'
 
-# Comma-separated list in .env, e.g. "127.0.0.1,localhost,mydomain.com"
-raw_hosts = os.getenv('DJANGO_ALLOWED_HOSTS', '127.0.0.1,localhost')
-ALLOWED_HOSTS = [h.strip() for h in raw_hosts.split(',') if h.strip()]
+# -------------------------
+# HOSTS / ENVIRONMENTS
+# -------------------------
 
-# Application definition
+if DEBUG:
+    # Dev: allow everything (safe only on your own machine)
+    ALLOWED_HOSTS = ['*']
+else:
+    raw_hosts = os.getenv('DJANGO_ALLOWED_HOSTS', '')
+    ALLOWED_HOSTS = [h.strip() for h in raw_hosts.split(',') if h.strip()]
+
+# -------------------------
+# APPLICATION DEFINITION
+# -------------------------
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -32,15 +40,12 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    
+
     # Third-party apps
     'rest_framework',
-    'rest_framework_simplejwt',  # Added for JWT authentication
-    'corsheaders',               # Optional: If using CORS for external API calls
+    'rest_framework_simplejwt',  # JWT authentication
+    'corsheaders',               # CORS (for external frontends if needed)
     'channels',
-    'django_otp',
-    'django_otp.plugins.otp_email',
-    'two_factor',
 
     # Local apps
     'core',
@@ -49,13 +54,12 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'corsheaders.middleware.CorsMiddleware',  # Optional: If CORS is needed
+    'corsheaders.middleware.CorsMiddleware',  # CORS (must be high in the list)
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'django_otp.middleware.OTPMiddleware',
 ]
 
 ROOT_URLCONF = 'styloria_project.urls'
@@ -76,9 +80,13 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'styloria_project.wsgi.application'  # Note: still using WSGI, for deployment we discussed ASGI if needed
+WSGI_APPLICATION = 'styloria_project.wsgi.application'
+ASGI_APPLICATION = 'styloria_project.asgi.application'
 
-# Database: SQLite by default, Postgres if DB_NAME is set
+# -------------------------
+# DATABASE
+# -------------------------
+
 if os.getenv('DB_NAME'):
     DATABASES = {
         'default': {
@@ -97,82 +105,89 @@ else:
             'NAME': BASE_DIR / 'db.sqlite3',
         }
     }
-# Password validation
+
+# -------------------------
+# PASSWORD VALIDATION
+# -------------------------
+
 AUTH_PASSWORD_VALIDATORS = [
+
     {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+        'NAME': 'core.password_validators.ComplexityValidator',
     },
 ]
+
 
 # Custom user model
 AUTH_USER_MODEL = 'core.CustomUser'
 
-# Internationalization
+# -------------------------
+# INTERNATIONALIZATION
+# -------------------------
+
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
-# Static files (CSS, JavaScript, Images)
+# -------------------------
+# STATIC FILES
+# -------------------------
+
 STATIC_URL = '/static/'
 
 STATICFILES_DIRS = [
     BASE_DIR / "core" / "static",
 ]
 
-# Folder where collectstatic will put all files for production
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
-# Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# Stripe configuration (added in step 14.1)
-# Replace these with your Stripe test or live keys
-# Stripe configuration
+# -------------------------
+# STRIPE
+# -------------------------
+
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', '')
 STRIPE_PUBLISHABLE_KEY = os.getenv('STRIPE_PUBLISHABLE_KEY', '')
 
-# REST Framework configuration (JWT authentication added in earlier steps)
+# -------------------------
+# DRF / JWT
+# -------------------------
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-        'rest_framework.authentication.SessionAuthentication',  # Optional
+        'rest_framework.authentication.SessionAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.IsAuthenticated',  # Default: require authentication globally
+        'rest_framework.permissions.IsAuthenticated',
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 10,  # Optional: adjust pagination as needed
+    'PAGE_SIZE': 10,
 }
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(days=1),   # token valid for 1 day
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),  # refresh valid for 7 days
+    "ACCESS_TOKEN_LIFETIME": timedelta(days=1),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
 }
 
-# CORS configuration (optional, if your frontend is on a different domain)
-# CORS_ORIGIN_ALLOW_ALL = True  # OR use a whitelist:
+# -------------------------
+# CORS / CSRF (for future web frontends)
+# -------------------------
 # CORS_ALLOWED_ORIGINS = [
-#     "http://localhost:3000",  # Example: React/Flutter web frontend running on localhost
+#     "http://localhost:3000",
+# ]
+# CSRF_TRUSTED_ORIGINS = [
+#     "https://your-backend-domain.com",
 # ]
 
-# Additional security and other settings (optional)
-# CSRF_TRUSTED_ORIGINS = ['https://your-production-domain.com']  # For production
+# -------------------------
+# CHANNELS
+# -------------------------
 
-ASGI_APPLICATION = 'styloria_project.asgi.application'
-
-# Channel layers configuration - conditional based on USE_REDIS environment variable
 if os.getenv("USE_REDIS", "false").lower() == "true":
     CHANNEL_LAYERS = {
         'default': {
@@ -189,12 +204,32 @@ else:
         },
     }
 
+# -------------------------
+# MFA / EMAIL / TWILIO
+# -------------------------
+
 OTP_EMAIL = {
-    'FROM_ADDRESS': 'no-reply@styloria.com',  # Replace with your sender email address
+    'FROM_ADDRESS': 'no-reply@styloria.com',
     'SUBJECT': 'Your Styloria Login Verification Code',
 }
 
-# Twilio settings for SMS MFA
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', '')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
 TWILIO_FROM_NUMBER = os.getenv('TWILIO_FROM_NUMBER', '')
+
+# -------------------------
+# SECURITY FOR PRODUCTION
+# -------------------------
+
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+
+# No custom LOGIN_URL – Django will default to /accounts/login/
+# Admin still uses its own /admin/login/ page.
