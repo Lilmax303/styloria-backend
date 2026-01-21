@@ -1,6 +1,6 @@
 # core/models.py
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from datetime import date as date_cls
 from decimal import Decimal
 import re
