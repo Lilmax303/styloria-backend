@@ -1,4 +1,5 @@
- 
+# core/permissions.py
+
 from rest_framework import permissions
 
 class IsAuthenticatedAndUser(permissions.BasePermission):

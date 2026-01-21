@@ -19,3 +19,35 @@ media/
 .vscode/
 .idea/
 *.swp
+# Token caches and secrets
+ms_graph_token_cache.bin
+*.bin
+celerybeat-schedule
+celerybeat-schedule.db
+
+# Environment files
+.env
+*.env
+.env.*
+
+# Local test files
+test.py
+test_*.py
+
+# Submodules (if not needed)
+styloria-website/
+
+# Cache files
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Database
+*.sqlite3
+db.sqlite3

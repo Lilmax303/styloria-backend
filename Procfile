@@ -1,0 +1,1 @@
+web: gunicorn styloria_project.wsgi --log-file -
