@@ -1,5 +1,7 @@
 # core/models.py
 
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 from datetime import date as date_cls
 from decimal import Decimal
