@@ -191,7 +191,6 @@ STRIPE_PUBLISHABLE_KEY = os.getenv('STRIPE_PUBLISHABLE_KEY', '')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET', '')
 
 # Stripe Connect (used for account onboarding links)
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip()
 STRIPE_CONNECT_RETURN_URL = os.getenv("STRIPE_CONNECT_RETURN_URL", "").strip()
 STRIPE_CONNECT_REFRESH_URL = os.getenv("STRIPE_CONNECT_REFRESH_URL", "").strip()
 STRIPE_DEFAULT_CONNECT_COUNTRY = os.getenv("STRIPE_DEFAULT_CONNECT_COUNTRY", "US").strip()
@@ -328,6 +327,7 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 USE_CLOUD_STORAGE = os.environ.get('USE_CLOUD_STORAGE', 'False').lower() == 'true'
 
 if USE_CLOUD_STORAGE:
+    INSTALLED_APPS += ["storages"]
     # Cloudflare R2 Configuration (S3-compatible)
     AWS_ACCESS_KEY_ID = os.environ.get('R2_ACCESS_KEY_ID')
     AWS_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY')
@@ -336,11 +336,12 @@ if USE_CLOUD_STORAGE:
     AWS_S3_REGION_NAME = 'auto'  # R2 uses 'auto'
  
     # Storage settings
-    AWS_DEFAULT_ACL = 'public-read'
+    AWS_DEFAULT_ACL = None
     AWS_S3_OBJECT_PARAMETERS = {
         'CacheControl': 'max-age=86400',  # 1 day cache
     }
-    AWS_QUERYSTRING_AUTH = False  # Use public URLs
+    AWS_QUERYSTRING_AUTH = True  # Use public URLs
+    AWS_S3_SIGNATURE_VERSION = "s3v4"
     
     # Optional: Custom domain (if you set up R2 custom domain)
     R2_CUSTOM_DOMAIN = os.environ.get('R2_CUSTOM_DOMAIN', '')
@@ -350,6 +351,11 @@ if USE_CLOUD_STORAGE:
     else:
         # Use R2 public URL
         MEDIA_URL = f'{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/'
+
+    STORAGES = {
+        "default": {"BACKEND": "storages.backends.s3boto3.S3Boto3Storage"},
+        "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+    }
    
     # Use S3 for media files
     DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'

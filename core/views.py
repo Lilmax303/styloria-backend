@@ -1843,7 +1843,7 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
 
         Restriction:
         - allowed if request.user is provider owner/admin OR
-        - request.user has a booking with this provider in accepted/in_progress/completed
+        - request.user has a booking with this provider in accepted/in_progress
         """
         provider = self.get_object()
 
@@ -2212,10 +2212,11 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
             "jobs": serializer.data,
             "provider_tier": provider_tier,
             "provider_trust_score": calculate_provider_trust_score(provider),
-            "eligible_tiers": get_eligible_tiers(provider_tier),
+            "eligible_tiers": self._get_eligible_tiers(provider_tier),
         })
 
 
+    @staticmethod
     def _get_eligible_tiers(provider_tier):
         """Return list of tiers a provider can accept jobs from."""
         if provider_tier == 'premium':
@@ -2279,14 +2280,14 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
 
             if provider_currency != user_currency:
                 try:
-                    converted = convert_amount(float(original_price), provider_currency, user_currency)
+                    converted = convert_amount(float(original_price_decimal), provider_currency, user_currency)
                     converted_price_decimal = Decimal(str(converted))
                 except Exception:
-                    converted_price = original_price
+                    converted_price_decimal = original_price_decimal
             else:
-                converted_price = original_price
+                converted_price_decimal = original_price_decimal
 
-            provider.converted_price = converted_price
+            provider.converted_price = converted_price_decimal
             provider.distance_km = distance_km
             nearby_providers.append(provider)
 
@@ -2338,7 +2339,7 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
         #   - Empty standard → blend budget and premium
         #   - Empty premium → use standard prices at higher percentile
 
-        all_prices = sorted([p.converted_price for p in nearby_providers])
+        all_prices = sorted([Decimal(str(p.converted_price)) for p in nearby_providers])
         n = len(all_prices)
 
         # Track which tiers are naturally populated
@@ -2385,7 +2386,7 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
         premium_base = max(premium_base, min_premium)
     
         # ===== TRANSPORTATION =====
-        avg_distance = sum(p.distance_km for p in nearby_providers) / len(nearby_providers)
+        avg_distance = sum((p.distance_km for p in nearby_providers), Decimal("0")) / Decimal(str(len(nearby_providers)))
     
         usd_rate_per_km = Decimal("0.55")
         if user_currency != "USD":
@@ -2489,7 +2490,10 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
                 "premium": None if tier_availability['premium'] else "Price estimated from available providers",
             },
 
-            "provider_service_prices": sorted([float(p.converted_price.quantize(Decimal("0.01"))) for p in nearby_providers]),
+            "provider_service_prices": sorted([
+                float(Decimal(str(p.converted_price)).quantize(Decimal("0.01")))
+                for p in nearby_providers
+            ]),
          
             "user_currency": user_currency,
             "currency_symbol": currency_symbol,

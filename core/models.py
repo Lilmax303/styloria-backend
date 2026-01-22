@@ -504,7 +504,7 @@ class ServiceProvider(models.Model):
         return ServiceRequest.objects.filter(
             user=user,
             service_provider=self,
-            status__in=("accepted", "in_progress", "completed"),
+            status__in=("accepted", "in_progress"),
         ).exists()
 
     def save(self, *args, **kwargs):

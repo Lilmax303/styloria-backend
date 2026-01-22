@@ -408,19 +408,14 @@ class ServiceProviderSerializer(serializers.ModelSerializer):
 
             "is_verified",
             "verification_status",
-            "id_document_front",
-            "id_document_back",
-            "verification_selfie",
             "verification_submitted_at",
             "verification_reviewed_at",
             "verification_review_notes",
-            "id_document_front_url",
-            "id_document_back_url",
-            "verification_selfie_url",
 
             "portfolio_posts",
             "reviews",
         ]
+
         read_only_fields = [
             "is_verified",
             "verification_submitted_at",
@@ -428,6 +423,22 @@ class ServiceProviderSerializer(serializers.ModelSerializer):
             "verification_review_notes",
             "verification_reviewed_by",
         ]
+
+        extra_kwargs = {
+            # Never expose raw KYC files for reading through generic provider responses
+            "id_document_front": {"write_only": True, "required": False, "allow_null": True},
+            "id_document_back": {"write_only": True, "required": False, "allow_null": True},
+            "verification_selfie": {"write_only": True, "required": False, "allow_null": True},
+        }
+
+
+    def _can_view_kyc(self, obj: ServiceProvider) -> bool:
+        request = self.context.get("request")
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        u = request.user
+        return bool(u.is_staff or getattr(u, "role", "") == "admin" or u.pk == obj.user_id)
+
 
     def get_average_rating(self, obj):
         result = obj.reviews.aggregate(avg=Avg("rating"))["avg"]
@@ -437,28 +448,29 @@ class ServiceProviderSerializer(serializers.ModelSerializer):
         return obj.reviews.count()
 
     def get_id_document_front_url(self, obj):
-        if obj.id_document_front:
-            request = self.context.get("request")
-            if request:
-                return request.build_absolute_uri(obj.id_document_front.url)
-            return obj.id_document_front.url
-        return None
+        if not self._can_view_kyc(obj):
+            return None
+        if not obj.id_document_front:
+            return None
+        request = self.context.get("request")
+        return request.build_absolute_uri(obj.id_document_front.url) if request else obj.id_document_front.url
 
     def get_id_document_back_url(self, obj):
-        if obj.id_document_back:
-            request = self.context.get("request")
-            if request:
-                return request.build_absolute_uri(obj.id_document_back.url)
-            return obj.id_document_back.url
-        return None
+        if not self._can_view_kyc(obj):
+            return None
+        if not obj.id_document_back:
+            return None
+        request = self.context.get("request")
+        return request.build_absolute_uri(obj.id_document_back.url) if request else obj.id_document_back.url
 
     def get_verification_selfie_url(self, obj):
-        if obj.verification_selfie:
-            request = self.context.get("request")
-            if request:
-                return request.build_absolute_uri(obj.verification_selfie.url)
-            return obj.verification_selfie.url
-        return None
+        if not self._can_view_kyc(obj):
+            return None
+        if not obj.verification_selfie:
+            return None
+        request = self.context.get("request")
+        return request.build_absolute_uri(obj.verification_selfie.url) if request else obj.verification_selfie.url
+
 
     def get_portfolio_posts(self, obj: ServiceProvider):
         """
@@ -523,6 +535,42 @@ class ServiceProviderSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         return ServiceProvider.objects.create(user=request.user, **validated_data)
 
+
+
+class ServiceProviderPublicSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+    average_rating = serializers.SerializerMethodField()
+    review_count = serializers.SerializerMethodField()
+
+    service_prices = ServiceProviderPricingSerializer(
+        source="service_prices.all",
+        many=True,
+        read_only=True,
+    )
+
+    class Meta:
+        model = ServiceProvider
+        fields = [
+            "id",
+            "user",
+            "bio",
+            "available",
+            "location_latitude",
+            "location_longitude",
+            "average_rating",
+            "review_count",
+            "service_prices",
+            "is_verified",
+            "verification_status",
+        ]
+
+    def get_average_rating(self, obj):
+        result = obj.reviews.aggregate(avg=Avg("rating"))["avg"]
+        return float(result or 0.0)
+
+    def get_review_count(self, obj):
+        return obj.reviews.count()
+
 class ProviderCertificationSerializer(serializers.ModelSerializer):
     is_expired = serializers.BooleanField(read_only=True)
     document_url = serializers.SerializerMethodField()
@@ -544,6 +592,15 @@ class ProviderCertificationSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'is_verified', 'created_at']
     
     def get_document_url(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user or not request.user.is_authenticated:
+            return None
+        u = request.user
+        is_admin = bool(u.is_staff or getattr(u, "role", "") == "admin")
+        is_owner = bool(obj.provider and obj.provider.user_id == u.id)
+        if not (is_admin or is_owner):
+            return None
+
         if obj.document:
             request = self.context.get('request')
             if request:
@@ -554,7 +611,7 @@ class ProviderCertificationSerializer(serializers.ModelSerializer):
 
 class ServiceRequestSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
-    service_provider = ServiceProviderSerializer(read_only=True)
+    service_provider = ServiceProviderPublicSerializer(read_only=True)
 
     converted_price = serializers.SerializerMethodField()
     converted_estimated_price = serializers.SerializerMethodField()
