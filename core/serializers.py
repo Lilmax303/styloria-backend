@@ -412,6 +412,10 @@ class ServiceProviderSerializer(serializers.ModelSerializer):
             "verification_reviewed_at",
             "verification_review_notes",
 
+            "id_document_front_url",
+            "id_document_back_url",
+            "verification_selfie_url",
+
             "portfolio_posts",
             "reviews",
         ]
