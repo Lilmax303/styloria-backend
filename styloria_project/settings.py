@@ -27,16 +27,20 @@ MS_GRAPH_TOKEN_CACHE_PATH = BASE_DIR / "ms_graph_token_cache.bin"
 # =============================================================================
 # EMAIL SETTINGS
 # =============================================================================
-# Email Configuration
+# SendGrid API Key (used by both API and SMTP)
+SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY')
+
+# Default from email
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'styloria_mdk303@outlook.com')
+
+# SMTP settings (backup/local testing)
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.sendgrid.net')
 EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
 EMAIL_USE_TLS = True
 EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', 'apikey')
 EMAIL_HOST_PASSWORD = os.environ.get('SENDGRID_API_KEY')
-DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'styloria_mdk303@outlook.com')
 EMAIL_TIMEOUT = 30
-
 
 # ============================================================================
 # CORE DJANGO SETTINGS
