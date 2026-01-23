@@ -16,6 +16,9 @@ load_dotenv(BASE_DIR / '.env')
 # MICROSOFT GRAPH (Email)
 # =============================================================================
 MS_GRAPH_CLIENT_ID = os.getenv("MS_GRAPH_CLIENT_ID", "").strip()
+MS_GRAPH_CLIENT_SECRET = os.environ.get('MS_GRAPH_CLIENT_SECRET', '')
+MS_GRAPH_TENANT_ID = os.environ.get('MS_GRAPH_TENANT_ID', '')
+MS_GRAPH_SENDER_EMAIL = os.environ.get('MS_GRAPH_SENDER_EMAIL', '')
 MS_GRAPH_AUTHORITY = "https://login.microsoftonline.com/consumers"
 MS_GRAPH_SCOPES = ["User.Read", "Mail.Send"]
 MS_GRAPH_TOKEN_CACHE_PATH = BASE_DIR / "ms_graph_token_cache.bin"
@@ -24,13 +27,13 @@ MS_GRAPH_TOKEN_CACHE_PATH = BASE_DIR / "ms_graph_token_cache.bin"
 # =============================================================================
 # EMAIL SETTINGS
 # =============================================================================
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
-EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
-DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Styloria <noreply@styloria.com>')
+EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp-mail.outlook.com')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() == 'true'
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER)
 
 
 # =============================================================================

@@ -54,7 +54,6 @@ from django.views.decorators.csrf import csrf_exempt
 from rest_framework_simplejwt.tokens import RefreshToken
 from twilio.rest import Client
 
-from core.utils.ms_graph_mail import send_email_via_graph
 from core.utils.stripe_money import from_minor_units
 from core.utils.regions import is_african_country_name, parse_stripe_allowed_african_countries
 from core.utils.currency import get_currency_for_country
@@ -946,20 +945,14 @@ def send_email_verification(request):
         used=False,
     )
 
-    try:
-        send_email_via_graph(
-            to_email=user.email,
-            subject="Verify your Styloria email",
-            body_text=f"Your Styloria verification code is: {code}\n\nThis code expires in 15 minutes.",
-        )
-    except Exception:
-        send_mail(
-            subject="Verify your Styloria email",
-            message=f"Your Styloria verification code is: {code}\n\nThis code expires in 15 minutes.",
-            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-            recipient_list=[user.email],
-            fail_silently=False,
-        )
+    from core.utils.ms_graph_mail import send_email_with_fallback
+    
+    send_email_with_fallback(
+        to_email=user.email,
+        subject="Verify your Styloria email",
+        body_text=f"Your Styloria verification code is: {code}\n\nThis code expires in 15 minutes.",
+        fail_silently=False,
+    )
 
     return Response({"detail": "If that account exists, a verification code was sent."}, status=200)
 
@@ -1019,9 +1012,10 @@ def _get_user_agent(request) -> str:
 
 def _send_password_reset_email(user, code: str, expires_minutes: int = 15) -> bool:
     """Send password reset code via email."""
+    from core.utils.ms_graph_mail import send_email_with_fallback
+    
     subject = "Styloria Password Reset Code"
-    message = f"""
-Hello {user.first_name or user.username},
+    message = f"""Hello {user.first_name or user.username},
 
 You requested to reset your password for your Styloria account.
 
@@ -1033,37 +1027,12 @@ If you did not request this, please ignore this email or contact support if you'
 
 — The Styloria Team
 """
-    try:
-        # Try MS Graph first
-        from core.utils.ms_graph_mail import send_email_via_graph
-        send_email_via_graph(
-            to_email=user.email,
-            subject=subject,
-            body_text=message,
-        )
-        return True
-    except Exception as graph_error:
-        # Fallback to Django send_mail
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.warning(f"MS Graph failed, trying SMTP: {graph_error}") 
-   
-    try:
-        from django.core.mail import send_mail
-        from django.conf import settings as django_settings
-        
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(django_settings, 'DEFAULT_FROM_EMAIL', None) or "no-reply@styloria.app",
-            recipient_list=[user.email],
-            fail_silently=False,
-        )
-        return True
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to send password reset email to {user.email}: {e}")
-        return False
+    return send_email_with_fallback(
+        to_email=user.email,
+        subject=subject,
+        body_text=message,
+        fail_silently=True,
+    )
 
 
 @api_view(["POST"])
@@ -1208,12 +1177,12 @@ def password_reset_confirm(request):
         ).exclude(pk=reset_code.pk).update(used=True, used_at=timezone.now())
     
     # Optional: Send confirmation email
-    try:
-        from core.utils.ms_graph_mail import send_email_via_graph
-        send_email_via_graph(
-            to_email=user.email,
-            subject="Styloria Password Changed",
-            body_text=f"""Hello {user.first_name or user.username},
+    from core.utils.ms_graph_mail import send_email_with_fallback
+    
+    send_email_with_fallback(
+        to_email=user.email,
+        subject="Styloria Password Changed",
+        body_text=f"""Hello {user.first_name or user.username},
 
 Your password was successfully changed.
 
@@ -1221,29 +1190,8 @@ If you did not make this change, please contact our support team immediately.
 
 — The Styloria Team
 """,
-        )
-    except Exception:
-        # Fallback to Django send_mail (inside the except block!)
-        try:
-            from django.core.mail import send_mail
-            from django.conf import settings as django_settings
-            
-            send_mail(
-                subject="Styloria Password Changed",
-                message=f"""Hello {user.first_name or user.username},
-
-Your password was successfully changed.
-
-If you did not make this change, please contact our support team immediately.
-
-— The Styloria Team
-""",
-                from_email=getattr(django_settings, 'DEFAULT_FROM_EMAIL', None) or "no-reply@styloria.app",
-                recipient_list=[user.email],
-                fail_silently=True,
-            )
-        except Exception:
-            pass  # Don't fail the request if confirmation email fails
+        fail_silently=True,  # Don't fail the request if confirmation email fails
+    )
     
     return Response({
         "message": "Password reset successfully. You can now log in with your new password."
@@ -1327,23 +1275,14 @@ Your username is: {user.get_username()}
 
 — The Styloria Team
 """
-        try:
-            from core.utils.ms_graph_mail import send_email_via_graph
-            send_email_via_graph(
-                to_email=user.email,
-                subject=subject,
-                body_text=message,
-            )
-        except Exception:
-            # Fallback to Django send_mail
-            from django.core.mail import send_mail
-            send_mail(
-                subject=subject,
-                message=message,
-                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-                recipient_list=[user.email],
-                fail_silently=False,
-            )
+        from core.utils.ms_graph_mail import send_email_with_fallback
+        
+        send_email_with_fallback(
+            to_email=user.email,
+            subject=subject,
+            body_text=message,
+            fail_silently=False,
+        )
 
     return Response({"detail": "If that email exists, your username was sent."}, status=200)
 
@@ -4395,16 +4334,14 @@ def admin_review_verification(request, provider_id):
         else:
             body = "Your Styloria KYC verification was approved.\n\nYou now have full access to provider features."
 
-        try:
-            send_email_via_graph(to_email=provider.user.email, subject=subject, body_text=body)
-        except Exception:
-            send_mail(
-                subject=subject,
-                message=body,
-                from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-                recipient_list=[provider.user.email],
-                fail_silently=True,
-            )
+        from core.utils.ms_graph_mail import send_email_with_fallback
+        
+        send_email_with_fallback(
+            to_email=provider.user.email,
+            subject=subject,
+            body_text=body,
+            fail_silently=True,
+        )
 
     send_websocket_notification(
         provider.user,
