@@ -2,8 +2,28 @@
 
 import logging
 from django.conf import settings
+from django.core.mail import EmailMultiAlternatives
 
 logger = logging.getLogger(__name__)
+
+
+def _send_html_email(to_email: str, subject: str, html_content: str, plain_content: str) -> bool:
+    """
+    Internal helper to send HTML email via Django SMTP.
+    """
+    try:
+        email = EmailMultiAlternatives(
+            subject=subject,
+            body=plain_content,
+            from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@styloria.app'),
+            to=[to_email],
+        )
+        email.attach_alternative(html_content, "text/html")
+        email.send(fail_silently=False)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email to {to_email}: {e}")
+        return False
 
 
 def send_kyc_approved_email(provider) -> bool:
@@ -110,8 +130,7 @@ def send_kyc_approved_email(provider) -> bool:
     </html>
     """
     
-    plain_content = f"""
-Hi {first_name},
+    plain_content = f"""Hi {first_name},
 
 Great news! 🎉 Your identity verification has been APPROVED. You are now a verified provider on Styloria!
 
@@ -132,21 +151,16 @@ Thank you for being part of the Styloria community. We're excited to have you!
 Questions? Contact us at support@styloria.com
 
 - The Styloria Team
-    """
+"""
     
-    try:
-        from core.utils.ms_graph_mail import send_html_email_via_graph
-        send_html_email_via_graph(
-            to_email=to_email,
-            subject=subject,
-            html_body=html_content,
-            plain_body=plain_content,
-        )
+    result = _send_html_email(to_email, subject, html_content, plain_content)
+    
+    if result:
         logger.info(f"KYC approval email sent to {to_email}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send KYC approval email to {to_email}: {e}")
-        return False
+    else:
+        logger.error(f"Failed to send KYC approval email to {to_email}")
+    
+    return result
 
 
 def send_kyc_rejected_email(provider, rejection_reason=None) -> bool:
@@ -280,8 +294,7 @@ def send_kyc_rejected_email(provider, rejection_reason=None) -> bool:
     </html>
     """
     
-    plain_content = f"""
-Hi {first_name},
+    plain_content = f"""Hi {first_name},
 
 Thank you for submitting your verification documents. After careful review, we were unable to approve your verification at this time.
 {reason_plain}
@@ -304,18 +317,13 @@ Tips for a successful verification:
 If you believe this was a mistake or need assistance, please contact our support team at support@styloria.com
 
 - The Styloria Team
-    """
+"""
     
-    try:
-        from core.utils.ms_graph_mail import send_html_email_via_graph
-        send_html_email_via_graph(
-            to_email=to_email,
-            subject=subject,
-            html_body=html_content,
-            plain_body=plain_content,
-        )
+    result = _send_html_email(to_email, subject, html_content, plain_content)
+    
+    if result:
         logger.info(f"KYC rejection email sent to {to_email}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send KYC rejection email to {to_email}: {e}")
-        return False
+    else:
+        logger.error(f"Failed to send KYC rejection email to {to_email}")
+    
+    return result

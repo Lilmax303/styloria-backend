@@ -1367,8 +1367,10 @@ class UserViewSet(viewsets.ModelViewSet):
             used=False,
         )
 
+            from core.utils.ms_graph_mail import send_email_with_fallback
+        
         try:
-            send_email_via_graph(
+            send_email_with_fallback(
                 to_email=user.email,
                 subject="Verify your Styloria email",
                 body_text=(
@@ -1376,6 +1378,7 @@ class UserViewSet(viewsets.ModelViewSet):
                     f"Your email verification code is: {code}\n\n"
                     "This code expires in 15 minutes."
                 ),
+                fail_silently=False,
             )
             verification_sent = True
             verification_detail = "Verification code sent."
