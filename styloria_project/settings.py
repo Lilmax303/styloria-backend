@@ -165,7 +165,7 @@ if _core_static.exists():
     STATICFILES_DIRS.append(_core_static)
 
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 # Only set if the directory exists
 _whitenoise_root = BASE_DIR / "core" / "static_root"
