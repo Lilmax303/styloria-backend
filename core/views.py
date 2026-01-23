@@ -1367,7 +1367,7 @@ class UserViewSet(viewsets.ModelViewSet):
             used=False,
         )
 
-            from core.utils.ms_graph_mail import send_email_with_fallback
+        from core.utils.ms_graph_mail import send_email_with_fallback
         
         try:
             send_email_with_fallback(
