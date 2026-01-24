@@ -59,8 +59,8 @@ class UserSerializer(serializers.ModelSerializer):
     provider_verification_status = serializers.SerializerMethodField()
 
     # Write-only fields for signup location tracking
-    detected_country = serializers.CharField(write_only=True, required=False, allow_blank=True)
-    country_mismatch = serializers.BooleanField(write_only=True, required=False)
+    detected_country = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
+    country_mismatch = serializers.BooleanField(write_only=True, required=False, default=False)
 
     class Meta:
         model = CustomUser

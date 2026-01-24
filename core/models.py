@@ -47,11 +47,11 @@ SERVICE_TYPE_CHOICES = (
 CERTIFICATION_REQUIRED_SERVICES = {
     'massage': {
         'keywords': ['massage', 'massage therapy', 'massage therapist', 'lmt', 'bodywork', 'therapeutic massage'],
-        'message': 'Massage services require a verified massage therapy certification.',
+        'message': 'Massage services require a verified massage therapy certification to protect both you and your clients.',
     },
     # Add more services here if needed in the future
     # 'tattoo': {
-    #     'keywords': ['tattoo', 'tattoo artist', 'body art'],
+    #     'keywords': ['tattoo', 'tattoo artist', 'body art', 'tattooing'],
     #     'message': 'Tattoo services require a verified tattoo artist certification.',
     # },
 }
@@ -215,7 +215,7 @@ class CustomUser(AbstractUser):
         default='signup'
     )
 
-    # Signup location verification
+    # Signup location verification (for fraud prevention)
     detected_country_at_signup = models.CharField(
         max_length=100,
         blank=True,

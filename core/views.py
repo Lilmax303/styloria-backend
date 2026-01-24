@@ -299,14 +299,16 @@ def _check_service_certification_requirement(provider, service_type: str) -> dic
             },
         }
     
-    # Check if any verified certification matches the keywords
+    # Check if any verified certification matches the keywords (case-insensitive)
+    from django.db.models import Q
+    keyword_query = Q()
+    for keyword in keywords:
+        keyword_query |= Q(name__icontains=keyword)
+
     matching_cert = ProviderCertification.objects.filter(
         provider=provider,
         is_verified=True,
-    ).filter(
-        # Check if name contains any of the keywords (case-insensitive)
-        name__iregex=r'(' + '|'.join(keywords) + r')'
-    ).first()
+    ).filter(keyword_query).first()
     
     if not matching_cert:
         return {
@@ -338,28 +340,34 @@ def _get_provider_certification_status(provider) -> dict:
     Returns dict like: {'massage': {'has_verified_cert': True, 'cert_name': 'LMT License'}}
     """
     from core.models import CERTIFICATION_REQUIRED_SERVICES, ProviderCertification
+    from django.db.models import Q
     
     status = {}
     
     for service_type, requirement in CERTIFICATION_REQUIRED_SERVICES.items():
         keywords = requirement['keywords']
+
+        # Build query for matching keywords
+        keyword_query = Q()
+        for keyword in keywords:
+            keyword_query |= Q(name__icontains=keyword)
         
         # Find matching verified certification
         matching_cert = ProviderCertification.objects.filter(
             provider=provider,
             is_verified=True,
-        ).filter(
-            name__iregex=r'(' + '|'.join(keywords) + r')'
-        ).first()
+        ).filter(keyword_query).first()
         
         # Also check for pending (uploaded but not yet verified)
         pending_cert = ProviderCertification.objects.filter(
             provider=provider,
             is_verified=False,
-        ).filter(
-            name__iregex=r'(' + '|'.join(keywords) + r')'
-        ).first()
-        
+        ).filter(keyword_query).first()
+
+        is_expired = False
+        if matching_cert and hasattr(matching_cert, 'is_expired'):
+            is_expired = matching_cert.is_expired        
+
         status[service_type] = {
             'required': True,
             'has_verified_cert': matching_cert is not None,
