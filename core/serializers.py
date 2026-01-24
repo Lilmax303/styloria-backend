@@ -58,6 +58,10 @@ class UserSerializer(serializers.ModelSerializer):
     needs_kyc = serializers.SerializerMethodField()
     provider_verification_status = serializers.SerializerMethodField()
 
+    # Write-only fields for signup location tracking
+    detected_country = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    country_mismatch = serializers.BooleanField(write_only=True, required=False)
+
     class Meta:
         model = CustomUser
         fields = [
@@ -93,6 +97,8 @@ class UserSerializer(serializers.ModelSerializer):
             "preferred_language",
             "needs_kyc",
             "provider_verification_status",
+            "detected_country",
+            "country_mismatch",
         ]
         extra_kwargs = {
             "styloria_id": {"read_only": True},
@@ -204,6 +210,8 @@ class UserSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         password = validated_data.pop("password", None)
         validated_data.pop("password_confirm", None)
+        detected_country = validated_data.pop("detected_country", None)
+        country_mismatch = validated_data.pop("country_mismatch", False)
 
         self._validate_password(password)
 
@@ -216,6 +224,11 @@ class UserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"country_name": "Could not generate country code from country name."})
         if not validated_data["city_code"]:
             raise serializers.ValidationError({"city_name": "Could not generate city code from city name."})
+
+        # Store detected location info
+        if detected_country:
+            validated_data["detected_country_at_signup"] = detected_country
+        validated_data["country_mismatch_at_signup"] = bool(country_mismatch)
 
         user = CustomUser(**validated_data)
         user.set_password(password)

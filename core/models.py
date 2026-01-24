@@ -36,11 +36,25 @@ SERVICE_TYPE_CHOICES = (
     ('facial', 'Facial'),
     ('waxing', 'Waxing'),
     ('massage', 'Massage'),
+    ('tattoo', 'Tattoo'),
     ('styling', 'Hair Styling'),
     ('treatment', 'Hair Treatment'),
     ('extensions', 'Hair Extensions'),
     ('other', 'Other'),
 )
+
+# Services that require verified certifications
+CERTIFICATION_REQUIRED_SERVICES = {
+    'massage': {
+        'keywords': ['massage', 'massage therapy', 'massage therapist', 'lmt', 'bodywork', 'therapeutic massage'],
+        'message': 'Massage services require a verified massage therapy certification.',
+    },
+    # Add more services here if needed in the future
+    # 'tattoo': {
+    #     'keywords': ['tattoo', 'tattoo artist', 'body art'],
+    #     'message': 'Tattoo services require a verified tattoo artist certification.',
+    # },
+}
 
 
 def calculate_age_on_date(dob, on_date=None) -> int:
@@ -199,6 +213,18 @@ class CustomUser(AbstractUser):
             ('manual', 'Manual Selection'),
         ),
         default='signup'
+    )
+
+    # Signup location verification
+    detected_country_at_signup = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text='Country detected via GPS at signup time'
+    )
+    country_mismatch_at_signup = models.BooleanField(
+        default=False,
+        help_text='True if user selected different country than GPS detected'
     )
 
     # Last known location for currency detection

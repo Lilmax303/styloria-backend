@@ -260,6 +260,121 @@ def flutterwave_redirect(request):
     return HttpResponse(html, content_type="text/html")
 
 
+# -------------------------
+# CERTIFICATION REQUIREMENT HELPERS
+# -------------------------
+
+def _check_service_certification_requirement(provider, service_type: str) -> dict | None:
+    """
+    Check if a service requires certification and if the provider has it.
+    Returns error dict if requirement not met, None if OK.
+    """
+    from core.models import CERTIFICATION_REQUIRED_SERVICES, ProviderCertification
+    
+    service_type_lower = service_type.lower().strip()
+    
+    if service_type_lower not in CERTIFICATION_REQUIRED_SERVICES:
+        return None  # No certification required for this service
+    
+    requirement = CERTIFICATION_REQUIRED_SERVICES[service_type_lower]
+    keywords = requirement['keywords']
+    message = requirement['message']
+    
+    # Check if provider has a VERIFIED certification matching any keyword
+    has_verified_cert = ProviderCertification.objects.filter(
+        provider=provider,
+        is_verified=True,
+    ).exists()
+    
+    if not has_verified_cert:
+        return {
+            "detail": message,
+            "error_code": "certification_required",
+            "service_type": service_type,
+            "requirement": {
+                "service": service_type,
+                "keywords": keywords,
+                "has_any_verified_cert": False,
+                "has_matching_cert": False,
+            },
+        }
+    
+    # Check if any verified certification matches the keywords
+    matching_cert = ProviderCertification.objects.filter(
+        provider=provider,
+        is_verified=True,
+    ).filter(
+        # Check if name contains any of the keywords (case-insensitive)
+        name__iregex=r'(' + '|'.join(keywords) + r')'
+    ).first()
+    
+    if not matching_cert:
+        return {
+            "detail": f"{message} Please ensure your certification name includes relevant keywords (e.g., 'massage therapy', 'licensed massage therapist').",
+            "error_code": "certification_required",
+            "service_type": service_type,
+            "requirement": {
+                "service": service_type,
+                "keywords": keywords,
+                "has_any_verified_cert": True,
+                "has_matching_cert": False,
+            },
+        }
+    
+    # Check if certification is expired
+    if matching_cert.is_expired:
+        return {
+            "detail": f"Your massage certification '{matching_cert.name}' has expired. Please upload a valid certification.",
+            "error_code": "certification_expired",
+            "service_type": service_type,
+        }
+    
+    return None  # All checks passed
+
+
+def _get_provider_certification_status(provider) -> dict:
+    """
+    Get certification status for all services that require certification.
+    Returns dict like: {'massage': {'has_verified_cert': True, 'cert_name': 'LMT License'}}
+    """
+    from core.models import CERTIFICATION_REQUIRED_SERVICES, ProviderCertification
+    
+    status = {}
+    
+    for service_type, requirement in CERTIFICATION_REQUIRED_SERVICES.items():
+        keywords = requirement['keywords']
+        
+        # Find matching verified certification
+        matching_cert = ProviderCertification.objects.filter(
+            provider=provider,
+            is_verified=True,
+        ).filter(
+            name__iregex=r'(' + '|'.join(keywords) + r')'
+        ).first()
+        
+        # Also check for pending (uploaded but not yet verified)
+        pending_cert = ProviderCertification.objects.filter(
+            provider=provider,
+            is_verified=False,
+        ).filter(
+            name__iregex=r'(' + '|'.join(keywords) + r')'
+        ).first()
+        
+        status[service_type] = {
+            'required': True,
+            'has_verified_cert': matching_cert is not None,
+            'is_expired': matching_cert.is_expired if matching_cert else False,
+            'cert_name': matching_cert.name if matching_cert else None,
+            'cert_id': matching_cert.id if matching_cert else None,
+            'has_pending_cert': pending_cert is not None,
+            'pending_cert_name': pending_cert.name if pending_cert else None,
+            'keywords': keywords,
+            'message': requirement['message'],
+        }
+    
+    return status
+
+
 # ============================================================
 # ADMIN PAYOUT DASHBOARD ENDPOINTS
 # ============================================================
@@ -1557,7 +1672,10 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
 
         if request.method == "GET":
             serializer = self.get_serializer(provider, context={"request": request})
-            return Response(serializer.data)
+            data = serializer.data
+            # Include certification status for restricted services
+            data['certification_status'] = _get_provider_certification_status(provider)
+            return Response(data)
 
         serializer = self.get_serializer(
             provider,
@@ -1594,6 +1712,12 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
                             status=400,
                         )
 
+                    # Validate: check certification requirements for restricted services
+                    if offered:
+                        cert_error = _check_service_certification_requirement(provider, service_type)
+                        if cert_error:
+                            return Response(cert_error, status=400)
+
                     ServiceProviderPricing.objects.update_or_create(
                         provider=provider,
                         service_type=service_type,
@@ -1624,13 +1748,21 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
                             status=400,
                         )
 
+                    # Validate: check certification requirements for restricted services
+                    if offered:
+                        cert_error = _check_service_certification_requirement(provider, service_type)
+                        if cert_error:
+                            return Response(cert_error, status=400)
+
                     ServiceProviderPricing.objects.update_or_create(
                         provider=provider,
                         service_type=service_type,
                         defaults={"price": price_decimal, "offered": offered},
                     )
 
-        return Response(self.get_serializer(provider, context={"request": request}).data)
+        response_data = self.get_serializer(provider, context={"request": request}).data
+        response_data['certification_status'] = _get_provider_certification_status(provider)
+        return Response(response_data)
 
     # ==========================
     # PROVIDER PORTFOLIO
