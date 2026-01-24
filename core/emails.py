@@ -1,26 +1,49 @@
 # core/emails.py
 
+import os
 import logging
 from django.conf import settings
-from django.core.mail import EmailMultiAlternatives
 
 logger = logging.getLogger(__name__)
 
 
 def _send_html_email(to_email: str, subject: str, html_content: str, plain_content: str) -> bool:
     """
-    Internal helper to send HTML email via Django SMTP.
+    Send HTML email via SendGrid HTTP API.
+    Falls back gracefully if SendGrid is not configured.
     """
     try:
-        email = EmailMultiAlternatives(
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail, Email, To, Content
+        
+        api_key = os.environ.get('SENDGRID_API_KEY')
+        if not api_key:
+            logger.error("SENDGRID_API_KEY not set - cannot send email")
+            return False
+        
+        from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@styloria.app')
+        
+        sg = SendGridAPIClient(api_key)
+        
+        mail = Mail(
+            from_email=Email(from_email),
+            to_emails=To(to_email),
             subject=subject,
-            body=plain_content,
-            from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@styloria.app'),
-            to=[to_email],
         )
-        email.attach_alternative(html_content, "text/html")
-        email.send(fail_silently=False)
-        return True
+        
+        # Add plain text content
+        mail.add_content(Content("text/plain", plain_content))
+        # Add HTML content
+        mail.add_content(Content("text/html", html_content))
+        
+        response = sg.send(mail)
+        
+        logger.info(f"Email sent to {to_email}, status: {response.status_code}")
+        return response.status_code in [200, 201, 202]
+        
+    except ImportError:
+        logger.error("SendGrid package not installed. Run: pip install sendgrid")
+        return False
     except Exception as e:
         logger.error(f"Failed to send email to {to_email}: {e}")
         return False
