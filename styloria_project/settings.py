@@ -342,7 +342,7 @@ if USE_CLOUD_STORAGE:
     AWS_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY')
     AWS_STORAGE_BUCKET_NAME = os.environ.get('R2_BUCKET_NAME', 'styloria-media')
     AWS_S3_ENDPOINT_URL = os.environ.get('R2_ENDPOINT_URL')  # https://<account_id>.r2.cloudflarestorage.com
-    AWS_S3_REGION_NAME = 'auto'  # R2 uses 'auto'
+    AWS_S3_REGION_NAME = 'auto'
  
     # Storage settings
     AWS_DEFAULT_ACL = None
@@ -351,6 +351,16 @@ if USE_CLOUD_STORAGE:
     }
     AWS_QUERYSTRING_AUTH = True  # Use public URLs
     AWS_S3_SIGNATURE_VERSION = "s3v4"
+
+    # Critical R2 settings
+    AWS_S3_ADDRESSING_STYLE = 'path'
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_S3_USE_SSL = True
+    AWS_S3_VERIFY = True
+   
+    # Disable region detection (causes infinite loops with R2)
+    AWS_S3_REGION_NAME = 'auto'
+    AWS_AUTO_CREATE_BUCKET = False
     
     # Optional: Custom domain (if you set up R2 custom domain)
     R2_CUSTOM_DOMAIN = os.environ.get('R2_CUSTOM_DOMAIN', '')
@@ -361,16 +371,31 @@ if USE_CLOUD_STORAGE:
         # Use R2 public URL
         MEDIA_URL = f'{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/'
 
+    # Use custom R2 storage backend (fixes region detection issues)
     STORAGES = {
-        "default": {"BACKEND": "storages.backends.s3boto3.S3Boto3Storage"},
+        "default": {"BACKEND": "core.storage_backends.CloudflareR2MediaStorage"},
         "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
     }
-   
-    # Use S3 for media files
-    DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+ 
+    DEFAULT_FILE_STORAGE = 'core.storage_backends.CloudflareR2MediaStorage'
 else:
     MEDIA_URL = '/media/'
     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+
+# =============================================================================
+# FILE UPLOAD SETTINGS
+# =============================================================================
+# Certification document settings
+CERTIFICATION_ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'pdf']
+CERTIFICATION_MAX_SIZE_IMAGE = 5 * 1024 * 1024  # 5 MB for images
+CERTIFICATION_MAX_SIZE_PDF = 10 * 1024 * 1024   # 10 MB for PDFs
+
+# General file upload limits
+DATA_UPLOAD_MAX_MEMORY_SIZE = 15 * 1024 * 1024  # 15 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 15 * 1024 * 1024  # 15 MB
+
+
 # =============================================================================
 # REST FRAMEWORK
 # =============================================================================

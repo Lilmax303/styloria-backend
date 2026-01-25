@@ -1299,7 +1299,7 @@ class ProviderCertificationAdmin(admin.ModelAdmin):
         'provider_username',
         'name',
         'issuing_organization',
-        'is_verified',
+        'verification_status_display',
         'expiry_status',
         'created_at',
     ]
@@ -1316,7 +1316,6 @@ class ProviderCertificationAdmin(admin.ModelAdmin):
         'provider__user__first_name',
         'provider__user__last_name',
     ]
-    list_editable = ['is_verified']
     readonly_fields = ['created_at', 'document_preview', 'provider_trust_score']
     ordering = ['-created_at']
     date_hierarchy = 'created_at'
@@ -1349,12 +1348,12 @@ class ProviderCertificationAdmin(admin.ModelAdmin):
     provider_username.short_description = 'Provider'
     provider_username.admin_order_field = 'provider__user__username'
     
-    def is_verified(self, obj):
+    def verification_status_display(self, obj):
         if obj.is_verified:
             return format_html('<span style="color: green; font-weight: bold;">✓ Verified</span>')
         return format_html('<span style="color: orange;">⏳ Pending</span>')
-    is_verified.short_description = 'Verified'
-    is_verified.admin_order_field = 'is_verified'
+    verification_status_display.short_description = 'Verified'
+    verification_status_display.admin_order_field = 'is_verified'
     
     def expiry_status(self, obj):
         if obj.expiry_date is None:
@@ -1410,12 +1409,150 @@ class ProviderCertificationAdmin(admin.ModelAdmin):
         )
     provider_trust_score.short_description = 'Provider Trust Score'
     
+    def save_model(self, request, obj, form, change):
+        """
+        Override save to send email notification when certification is verified.
+        """
+        if change:  # Only on update, not create
+            try:
+                old_obj = ProviderCertification.objects.get(pk=obj.pk)
+                was_verified = old_obj.is_verified
+            except ProviderCertification.DoesNotExist:
+                was_verified = False
+        else:
+            was_verified = False
+        
+        super().save_model(request, obj, form, change)
+        
+        # Send email if certification was just verified
+        if obj.is_verified and not was_verified:
+            self._send_certification_approved_email(obj, request)
+    
+    def _send_certification_approved_email(self, certification, request):
+        """Send email notification when certification is approved."""
+        from django.core.mail import send_mail
+        from django.conf import settings
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        
+        provider = certification.provider
+        user = provider.user
+        
+        if not user.email:
+            logger.warning(f"Cannot send certification approval email - no email for user {user.id}")
+            return
+        
+        subject = "🎉 Your Certification Has Been Verified - Styloria"
+        
+        message = f"""
+ Hi {user.first_name or user.username},
+
+ Great news! Your certification has been verified by our team.
+ 
+ 📜 Certification Details:
+    • Name: {certification.name}
+    • Issuing Organization: {certification.issuing_organization or 'N/A'}
+    • Status: ✅ Verified
+
+ This verification contributes to your Trust Score, helping you attract more clients and access higher-tier jobs.
+ 
+ What this means for you:
+    • Your profile now shows this as a verified certification
+    • Clients can see you have verified credentials
+    • Your trust score has been updated
+ 
+ Keep up the great work!
+
+ Best regards,
+ The Styloria Team
+ 
+ ---
+ This is an automated message. Please do not reply directly to this email.
+ """
+        
+        html_message = f"""
+ <!DOCTYPE html>
+ <html>
+ <head>
+     <style>
+         body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+         .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+         .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }}
+         .content {{ background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }}
+         .certification-box {{ background: white; border-left: 4px solid #22c55e; padding: 20px; margin: 20px 0; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
+         .badge {{ display: inline-block; background: #22c55e; color: white; padding: 5px 15px; border-radius: 20px; font-weight: bold; }}
+         .benefits {{ background: #e8f5e9; padding: 15px; border-radius: 5px; margin-top: 20px; }}
+         .footer {{ text-align: center; color: #666; font-size: 12px; margin-top: 20px; }}
+     </style>
+ </head>
+ <body>
+     <div class="container">
+         <div class="header">
+             <h1>🎉 Certification Verified!</h1>
+         </div>
+         <div class="content">
+             <p>Hi <strong>{user.first_name or user.username}</strong>,</p>
+             <p>Great news! Your certification has been verified by our team.</p>
+             
+             <div class="certification-box">
+                 <h3 style="margin-top: 0;">📜 Certification Details</h3>
+                 <p><strong>Name:</strong> {certification.name}</p>
+                 <p><strong>Issuing Organization:</strong> {certification.issuing_organization or 'N/A'}</p>
+                 <p><strong>Status:</strong> <span class="badge">✅ Verified</span></p>
+             </div>
+             
+             <div class="benefits">
+                 <h4 style="margin-top: 0;">✨ What this means for you:</h4>
+                 <ul>
+                     <li>Your profile now shows this as a verified certification</li>
+                     <li>Clients can see you have verified credentials</li>
+                     <li>Your trust score has been updated</li>
+                 </ul>
+             </div>
+             
+             <p>Keep up the great work!</p>
+             <p>Best regards,<br><strong>The Styloria Team</strong></p>
+         </div>
+         <div class="footer">
+             <p>This is an automated message. Please do not reply directly to this email.</p>
+         </div>
+     </div>
+ </body>
+ </html>
+ """
+        
+        try:
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                html_message=html_message,
+                fail_silently=False,
+            )
+            logger.info(f"Certification approval email sent to {user.email} for cert {certification.id}")
+            self.message_user(request, f"✉️ Approval notification sent to {user.email}", level='SUCCESS')
+        except Exception as e:
+            logger.error(f"Failed to send certification approval email: {str(e)}")
+            self.message_user(request, f"⚠️ Certification verified but email failed to send: {str(e)}", level='WARNING')
+
+
     @admin.action(description='✓ Verify selected certifications')
     def verify_certifications(self, request, queryset):
-        count = queryset.update(is_verified=True)
+        # Get certifications that weren't already verified
+        to_verify = queryset.filter(is_verified=False)
+        count = 0
+
+        for cert in to_verify:
+            cert.is_verified = True
+            cert.save()
+            self._send_certification_approved_email(cert, request)
+            count += 1
+
         self.message_user(
             request, 
-            f'Successfully verified {count} certification(s).',
+            f'Successfully verified {count} certification(s). Email notifications sent.',
             level='SUCCESS'
         )
     

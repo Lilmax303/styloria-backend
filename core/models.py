@@ -19,6 +19,54 @@ from django.core.validators import FileExtensionValidator
 from django.core.validators import MinValueValidator, MaxValueValidator
 
 
+
+# =============================================================================
+# FILE VALIDATORS
+# =============================================================================
+def validate_certification_file(file):
+    """
+    Validate certification document:
+    - Allowed types: PNG, JPG, JPEG, PDF
+    - Max size: 5MB for images, 10MB for PDFs
+    """
+    if not file:
+        return
+    
+    # Get file extension
+    ext = os.path.splitext(file.name)[1].lower().replace('.', '')
+    
+    # Get allowed extensions from settings or use defaults
+    allowed_extensions = getattr(
+        settings, 
+        'CERTIFICATION_ALLOWED_EXTENSIONS', 
+        ['png', 'jpg', 'jpeg', 'pdf']
+    )
+
+    if ext not in allowed_extensions:
+        raise ValidationError(
+            f"Unsupported file type '.{ext}'. "
+            f"Allowed types: {', '.join(allowed_extensions).upper()}"
+        )
+    
+    # Get max sizes from settings or use defaults
+    max_size_image = getattr(settings, 'CERTIFICATION_MAX_SIZE_IMAGE', 5 * 1024 * 1024)
+    max_size_pdf = getattr(settings, 'CERTIFICATION_MAX_SIZE_PDF', 10 * 1024 * 1024)
+
+    # Determine max size based on file type
+    if ext == 'pdf':
+        max_size = max_size_pdf
+        max_size_display = "10 MB"
+    else:
+        max_size = max_size_image
+        max_size_display = "5 MB"
+
+    if file.size > max_size:
+        raise ValidationError(
+            f"File too large. Maximum size for {ext.upper()} files is {max_size_display}. "
+            f"Your file is {file.size / (1024 * 1024):.1f} MB."
+        )
+
+
 # --- BUSINESS RULE CONSTANTS ---
 USER_FREE_CANCEL_BEFORE_MINUTES = 7
 USER_FREE_CANCEL_AFTER_MINUTES = 40
@@ -667,7 +715,8 @@ class ProviderCertification(models.Model):
         upload_to='certifications/%Y/%m/%d/',
         blank=True,
         null=True,
-        help_text="Upload certification document (optional)"
+        validators=[validate_certification_file],
+        help_text="Upload certification document (PNG, JPG, JPEG up to 5MB or PDF up to 10MB)"
     )
     issue_date = models.DateField(null=True, blank=True)
     expiry_date = models.DateField(
@@ -695,6 +744,12 @@ class ProviderCertification(models.Model):
             from django.utils import timezone
             return self.expiry_date < timezone.now().date()
         return False
+
+    def clean(self):
+        """Additional validation"""
+        super().clean()
+        if self.document:
+            validate_certification_file(self.document)
 
 
 class ServiceRequest(models.Model):

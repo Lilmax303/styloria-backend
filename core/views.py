@@ -10,6 +10,10 @@ import requests
 from io import BytesIO
 import uuid
 import statistics
+import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 import stripe
 import json
@@ -1981,7 +1985,7 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
         Body (multipart/form-data):
             - name: string (required)
             - issuing_organization: string (optional)
-            - document: file (optional, image or PDF)
+            - document: file (optional - PNG, JPG, JPEG up to 5MB or PDF up to 10MB)
             - issue_date: date string YYYY-MM-DD (optional)
             - expiry_date: date string YYYY-MM-DD (optional)
         """
@@ -2000,15 +2004,68 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
         name = request.data.get('name')
         if not name or not name.strip():
             return Response({"detail": "Certification name is required."}, status=400)
+
+        # Validate file before attempting upload
+        document = request.FILES.get('document')
+        if document:
+            # Check file extension
+            ext = os.path.splitext(document.name)[1].lower().replace('.', '')
+            allowed_extensions = ['png', 'jpg', 'jpeg', 'pdf']
+            
+            if ext not in allowed_extensions:
+                return Response({
+                    "detail": f"Unsupported file type '.{ext}'. Allowed types: PNG, JPG, JPEG, PDF",
+                    "error_code": "invalid_file_type",
+                    "allowed_types": allowed_extensions,
+                }, status=400)
+            
+            # Check file size
+            max_size_image = 5 * 1024 * 1024  # 5 MB
+            max_size_pdf = 10 * 1024 * 1024   # 10 MB
+            
+            if ext == 'pdf':
+                max_size = max_size_pdf
+                max_size_display = "10 MB"
+            else:
+                max_size = max_size_image
+                max_size_display = "5 MB"
+            
+            if document.size > max_size:
+                file_size_mb = document.size / (1024 * 1024)
+                return Response({
+                    "detail": f"File too large ({file_size_mb:.1f} MB). Maximum size for {ext.upper()} is {max_size_display}.",
+                    "error_code": "file_too_large",
+                    "max_size_bytes": max_size,
+                    "max_size_display": max_size_display,
+                    "your_file_size_mb": round(file_size_mb, 1),
+                }, status=400)
         
-        certification = ProviderCertification.objects.create(
-            provider=provider,
-            name=name.strip(),
-            issuing_organization=request.data.get('issuing_organization', '').strip(),
-            document=request.FILES.get('document'),
-            issue_date=request.data.get('issue_date') or None,
-            expiry_date=request.data.get('expiry_date') or None,
-        )
+        # Attempt to create certification with better error handling
+        try:
+        
+            certification = ProviderCertification.objects.create(
+                provider=provider,
+                name=name.strip(),
+                issuing_organization=request.data.get('issuing_organization', '').strip(),
+                document=document,
+                issue_date=request.data.get('issue_date') or None,
+                expiry_date=request.data.get('expiry_date') or None,
+            )
+        except Exception as e:
+            logger.error(f"Failed to create certification for provider {provider.id}: {str(e)}")
+            
+            # Check if it's a storage-related error
+            error_str = str(e).lower()
+            if any(x in error_str for x in ['s3', 'storage', 'bucket', 'boto', 'connection']):
+                return Response({
+                    "detail": "Failed to upload document. Please try again or contact support if the issue persists.",
+                    "error_code": "storage_error",
+                }, status=500)
+            
+            return Response({
+                "detail": "Failed to add certification. Please try again.",
+                "error_code": "creation_failed",
+            }, status=500)
         
         serializer = ProviderCertificationSerializer(
             certification, 
@@ -2057,6 +2114,47 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
             "current_tier": get_provider_tier(provider),
         })
 
+    @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated])
+    def certification_upload_info(self, request):
+        """
+        GET /api/service_providers/certification_upload_info/
+        Returns file upload requirements for certifications.
+        
+        Use this to show users what files are allowed before they attempt upload.
+        """
+        return Response({
+            "allowed_file_types": {
+                "extensions": ["png", "jpg", "jpeg", "pdf"],
+                "mime_types": [
+                    "image/png",
+                    "image/jpeg",
+                    "image/jpg", 
+                    "application/pdf"
+                ],
+                "description": "Images (PNG, JPG, JPEG) or PDF documents"
+            },
+            "max_file_sizes": {
+                "image": {
+                    "bytes": 5 * 1024 * 1024,
+                    "display": "5 MB",
+                    "extensions": ["png", "jpg", "jpeg"],
+                    "description": "For PNG, JPG, JPEG images"
+                },
+                "pdf": {
+                    "bytes": 10 * 1024 * 1024,
+                    "display": "10 MB",
+                    "extensions": ["pdf"],
+                    "description": "For PDF documents"
+                }
+            },
+            "max_certifications": 10,
+            "tips": [
+                "Ensure your document is clear and readable",
+                "Include your full name on the certification",
+                "For massage services, include 'massage' in the certification name",
+                "Certifications will be verified by our admin team"
+            ]
+        })
 
 
 # -------------------------

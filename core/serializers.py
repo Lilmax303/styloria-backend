@@ -591,7 +591,9 @@ class ServiceProviderPublicSerializer(serializers.ModelSerializer):
 class ProviderCertificationSerializer(serializers.ModelSerializer):
     is_expired = serializers.BooleanField(read_only=True)
     document_url = serializers.SerializerMethodField()
-    
+    allowed_file_types = serializers.SerializerMethodField()
+    max_file_sizes = serializers.SerializerMethodField()
+
     class Meta:
         model = ProviderCertification
         fields = [
@@ -605,8 +607,38 @@ class ProviderCertificationSerializer(serializers.ModelSerializer):
             'is_verified',
             'is_expired',
             'created_at',
+            'allowed_file_types',
+            'max_file_sizes',
         ]
         read_only_fields = ['id', 'is_verified', 'created_at']
+
+    def get_allowed_file_types(self, obj):
+        """Return allowed file types for document upload"""
+        return {
+            "extensions": ["png", "jpg", "jpeg", "pdf"],
+            "mime_types": [
+                "image/png",
+                "image/jpeg", 
+                "image/jpg",
+                "application/pdf"
+            ],
+            "description": "Images (PNG, JPG, JPEG) or PDF documents"
+        }
+   
+    def get_max_file_sizes(self, obj):
+        """Return max file sizes for document upload"""
+        return {
+            "image": {
+                "bytes": 5 * 1024 * 1024,
+                "display": "5 MB",
+                "extensions": ["png", "jpg", "jpeg"]
+            },
+            "pdf": {
+                "bytes": 10 * 1024 * 1024,
+                "display": "10 MB", 
+                "extensions": ["pdf"]
+            }
+        }
     
     def get_document_url(self, obj):
         request = self.context.get("request")
