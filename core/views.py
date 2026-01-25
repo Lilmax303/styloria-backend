@@ -5767,17 +5767,21 @@ def reset_paystack_payment(request):
     except ServiceRequest.DoesNotExist:
         return Response({"detail": "Booking not found."}, status=404)
     
-    if sr.payment_status == "pending" and sr.status == "pending":
-        sr.payment_status = "unpaid"
-        sr.paystack_reference = None
-        sr.paystack_access_code = None
-        sr.save(update_fields=["payment_status", "paystack_reference", "paystack_access_code"])
-        return Response({"detail": "Payment reset. You can try again."}, status=200)
-    
+    # Already paid - nothing to reset
     if sr.payment_status == "paid":
         return Response({"detail": "This booking is already paid."}, status=400)
     
-    return Response({"detail": "Cannot reset this booking."}, status=400)
+    # Can only reset if booking is still pending
+    if sr.status != "pending":
+        return Response({"detail": "Cannot reset payment for this booking status."}, status=400)
+
+    # Reset payment state - works for both 'unpaid' and 'pending' payment_status
+    sr.payment_status = "unpaid"
+    sr.paystack_reference = None
+    sr.paystack_access_code = None
+    sr.save(update_fields=["payment_status", "paystack_reference", "paystack_access_code"])
+
+    return Response({"detail": "Payment reset. You can try again."}, status=200)
 
 
 @csrf_exempt
