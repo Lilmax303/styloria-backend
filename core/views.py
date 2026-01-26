@@ -1981,104 +1981,123 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
         """
         POST /api/service_providers/add_certification/
         Add a new certification.
-        
-        Body (multipart/form-data):
-            - name: string (required)
-            - issuing_organization: string (optional)
-            - document: file (optional - PNG, JPG, JPEG up to 5MB or PDF up to 10MB)
-            - issue_date: date string YYYY-MM-DD (optional)
-            - expiry_date: date string YYYY-MM-DD (optional)
         """
+        import traceback
+        import os
+        
+        print(f"[CERT] === Starting certification upload ===")
+        print(f"[CERT] User: {request.user.id} - {request.user.username}")
+        
         try:
             provider = ServiceProvider.objects.get(user=request.user)
+            print(f"[CERT] Provider found: {provider.id}")
         except ServiceProvider.DoesNotExist:
+            print(f"[CERT] ERROR: No provider profile for user {request.user.id}")
             return Response({"detail": "No provider profile"}, status=404)
         
-        # Limit certifications (optional, prevent abuse)
+        # Limit certifications
         MAX_CERTIFICATIONS = 10
-        if provider.certifications.count() >= MAX_CERTIFICATIONS:
+        cert_count = provider.certifications.count()
+        print(f"[CERT] Current certification count: {cert_count}")
+        
+        if cert_count >= MAX_CERTIFICATIONS:
             return Response({
                 "detail": f"Maximum {MAX_CERTIFICATIONS} certifications allowed."
             }, status=400)
         
         name = request.data.get('name')
+        print(f"[CERT] Certification name: {name}")
+        
         if not name or not name.strip():
             return Response({"detail": "Certification name is required."}, status=400)
-
-        # Validate file before attempting upload
+        
+        # Get the document file
         document = request.FILES.get('document')
+        print(f"[CERT] Document received: {document is not None}")
+        
         if document:
-            # Check file extension
+            print(f"[CERT] Document name: {document.name}")
+            print(f"[CERT] Document size: {document.size} bytes")
+            print(f"[CERT] Document content_type: {getattr(document, 'content_type', 'unknown')}")
+            
+            # Validate file extension
             ext = os.path.splitext(document.name)[1].lower().replace('.', '')
             allowed_extensions = ['png', 'jpg', 'jpeg', 'pdf']
+            print(f"[CERT] File extension: {ext}")
             
             if ext not in allowed_extensions:
                 return Response({
                     "detail": f"Unsupported file type '.{ext}'. Allowed types: PNG, JPG, JPEG, PDF",
                     "error_code": "invalid_file_type",
-                    "allowed_types": allowed_extensions,
                 }, status=400)
             
             # Check file size
             max_size_image = 5 * 1024 * 1024  # 5 MB
             max_size_pdf = 10 * 1024 * 1024   # 10 MB
-            
-            if ext == 'pdf':
-                max_size = max_size_pdf
-                max_size_display = "10 MB"
-            else:
-                max_size = max_size_image
-                max_size_display = "5 MB"
+            max_size = max_size_pdf if ext == 'pdf' else max_size_image
             
             if document.size > max_size:
-                file_size_mb = document.size / (1024 * 1024)
                 return Response({
-                    "detail": f"File too large ({file_size_mb:.1f} MB). Maximum size for {ext.upper()} is {max_size_display}.",
+                    "detail": f"File too large. Max size is {max_size // (1024*1024)} MB.",
                     "error_code": "file_too_large",
-                    "max_size_bytes": max_size,
-                    "max_size_display": max_size_display,
-                    "your_file_size_mb": round(file_size_mb, 1),
                 }, status=400)
         
-        # Attempt to create certification with better error handling
-        try:
+        # Prepare data
+        issue_date = request.data.get('issue_date') or None
+        expiry_date = request.data.get('expiry_date') or None
+        issuing_org = request.data.get('issuing_organization', '').strip()
         
+        print(f"[CERT] Issue date: {issue_date}")
+        print(f"[CERT] Expiry date: {expiry_date}")
+        print(f"[CERT] Issuing org: {issuing_org}")
+        
+        # Create certification
+        print(f"[CERT] Creating certification object...")
+        
+        try:
             certification = ProviderCertification.objects.create(
                 provider=provider,
                 name=name.strip(),
-                issuing_organization=request.data.get('issuing_organization', '').strip(),
+                issuing_organization=issuing_org,
                 document=document,
-                issue_date=request.data.get('issue_date') or None,
-                expiry_date=request.data.get('expiry_date') or None,
+                issue_date=issue_date,
+                expiry_date=expiry_date,
             )
-        except Exception as e:
-            # Log the full exception details for debugging
-            import traceback
-            logger.error(f"Failed to create certification for provider {provider.id}: {type(e).__name__}: {str(e)}")
-            logger.error(f"Full traceback:\n{traceback.format_exc()}")
+            print(f"[CERT] SUCCESS! Certification created with ID: {certification.id}")
             
-            # Check if it's a storage-related error
+        except Exception as e:
+            error_msg = f"{type(e).__name__}: {str(e)}"
+            full_tb = traceback.format_exc()
+            
+            print(f"[CERT] EXCEPTION: {error_msg}")
+            print(f"[CERT] TRACEBACK:\n{full_tb}")
+            
+            # Check if storage-related
             error_str = str(e).lower()
-            if any(x in error_str for x in ['s3', 'storage', 'bucket', 'boto', 'connection']):
+            if any(x in error_str for x in ['s3', 'storage', 'bucket', 'boto', 'connection', 'r2']):
                 return Response({
-                    "detail": "Failed to upload document. Please try again or contact support if the issue persists.",
+                    "detail": "Failed to upload document. Please try again.",
                     "error_code": "storage_error",
-                    "debug_message": str(e) if settings.DEBUG else None,
+                    "error_type": type(e).__name__,
+                    "debug_message": error_msg,
                 }, status=500)
             
             return Response({
                 "detail": "Failed to add certification. Please try again.",
                 "error_code": "creation_failed",
-                "debug_message": str(e) if settings.DEBUG else None,
+                "error_type": type(e).__name__,
+                "debug_message": error_msg,
             }, status=500)
         
+        # Success - serialize and return
         serializer = ProviderCertificationSerializer(
             certification, 
             context={"request": request}
         )
         
-        # Return updated trust score
         from core.utils import calculate_provider_trust_score, get_provider_tier
+        
+        print(f"[CERT] Returning success response")
         
         return Response({
             "detail": "Certification added successfully!",
@@ -2086,13 +2105,6 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
             "trust_score": calculate_provider_trust_score(provider),
             "current_tier": get_provider_tier(provider),
         }, status=201)
-
-    @action(
-        detail=False, 
-        methods=["delete"], 
-        permission_classes=[IsAuthenticated],
-        url_path="delete_certification/(?P<cert_id>[^/.]+)"
-    )
     def delete_certification(self, request, cert_id=None):
         """
         DELETE /api/service_providers/delete_certification/<cert_id>/
