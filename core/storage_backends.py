@@ -30,8 +30,8 @@ class CloudflareR2Storage(Storage):
     """
     Standalone storage backend for Cloudflare R2.
     
-    This implementation uses boto3 client directly and completely avoids
-    the region detection code that causes infinite loops with R2.
+    This implementation uses boto3 client directly and disables
+    the region detection that causes infinite loops with R2.
     """
     
     def __init__(self, **kwargs):
@@ -50,7 +50,7 @@ class CloudflareR2Storage(Storage):
         if obj_params:
             self._cache_control = obj_params.get('CacheControl')
         
-        logger.info(f"CloudflareR2Storage initialized: bucket={self._bucket_name}, endpoint={self._endpoint_url}")
+        logger.info(f"CloudflareR2Storage initialized: bucket={self._bucket_name}")
     
     @property
     def client(self):
@@ -64,11 +64,12 @@ class CloudflareR2Storage(Storage):
     def _create_client(self):
         """
         Create a boto3 S3 client configured for Cloudflare R2.
+        Disables automatic region detection that causes infinite loops.
         """
         import boto3
         from botocore.config import Config
         
-        logger.debug(f"Creating boto3 client for R2: endpoint={self._endpoint_url}")
+        logger.info(f"Creating boto3 client for R2: endpoint={self._endpoint_url}")
         
         # Configuration that works with R2
         config = Config(
@@ -82,7 +83,10 @@ class CloudflareR2Storage(Storage):
             },
         )
         
-        client = boto3.client(
+        # Create session and client
+        session = boto3.session.Session()
+        
+        client = session.client(
             's3',
             aws_access_key_id=self._access_key,
             aws_secret_access_key=self._secret_key,
@@ -91,45 +95,99 @@ class CloudflareR2Storage(Storage):
             config=config,
         )
         
-        logger.debug("boto3 client created successfully")
+        # CRITICAL: Unregister the region redirector that causes infinite loops with R2
+        # This handler tries to detect bucket region on errors, which R2 doesn't support
+        try:
+            client.meta.events.unregister(
+                'needs-retry.s3.PutObject',
+                handler=self._find_and_remove_redirect_handler(client, 'needs-retry.s3.PutObject')
+            )
+        except Exception as e:
+            logger.debug(f"Could not unregister PutObject retry handler: {e}")
+        
+        # Also try to unregister for all S3 operations
+        self._disable_region_redirector(client)
+        
+        logger.info("boto3 client created successfully with region redirector disabled")
         return client
     
+    def _disable_region_redirector(self, client):
+        """
+        Disable the S3 region redirector that causes issues with R2.
+        """
+        try:
+            # Get the event system
+            events = client.meta.events
+            
+            # Try to unregister all redirect_from_error handlers
+            # These are registered by botocore.utils.S3RegionRedirectorv2
+            event_names = [
+                'needs-retry.s3.PutObject',
+                'needs-retry.s3.GetObject', 
+                'needs-retry.s3.HeadObject',
+                'needs-retry.s3.DeleteObject',
+                'needs-retry.s3.ListObjects',
+                'needs-retry.s3.ListObjectsV2',
+                'needs-retry.s3.*',
+            ]
+            
+            for event_name in event_names:
+                try:
+                    # Get all handlers for this event
+                    handlers = list(events._emitter._handlers.get(event_name, []))
+                    for handler in handlers:
+                        # Check if this is the redirect handler
+                        handler_func = handler[1] if isinstance(handler, tuple) else handler
+                        handler_name = getattr(handler_func, '__name__', str(handler_func))
+                        if 'redirect' in handler_name.lower() or 'region' in handler_name.lower():
+                            try:
+                                events.unregister(event_name, handler=handler_func)
+                                logger.debug(f"Unregistered {handler_name} from {event_name}")
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                    
+        except Exception as e:
+            logger.debug(f"Could not disable region redirector: {e}")
+    
+    def _find_and_remove_redirect_handler(self, client, event_name):
+        """Find the redirect handler for a specific event."""
+        try:
+            handlers = client.meta.events._emitter._handlers.get(event_name, [])
+            for handler in handlers:
+                handler_func = handler[1] if isinstance(handler, tuple) else handler
+                if 'redirect' in getattr(handler_func, '__name__', '').lower():
+                    return handler_func
+        except Exception:
+            pass
+        return None
+    
     def _normalize_name(self, name):
-        """
-        Normalize the file name.
-        """
+        """Normalize the file name."""
         if name is None:
             return name
-        
-        # Replace backslashes with forward slashes
         name = name.replace('\\', '/')
-        
-        # Remove leading slashes
         while name.startswith('/'):
             name = name[1:]
-        
         return name
     
     def _get_content_type(self, name):
-        """
-        Guess the content type from the file name.
-        """
+        """Guess the content type from the file name."""
         content_type, _ = mimetypes.guess_type(name)
         return content_type or 'application/octet-stream'
     
     def _save(self, name, content):
-        """
-        Save file to R2.
-        """
+        """Save file to R2."""
         name = self._normalize_name(name)
         
-        logger.info(f"CloudflareR2Storage._save called: name={name}")
+        logger.info(f"CloudflareR2Storage._save: name={name}")
         
         # Read the content
         content.seek(0)
         data = content.read()
         
-        logger.debug(f"Read {len(data)} bytes from content")
+        logger.info(f"CloudflareR2Storage._save: read {len(data)} bytes")
         
         # Prepare upload parameters
         params = {
@@ -144,8 +202,6 @@ class CloudflareR2Storage(Storage):
             content_type = self._get_content_type(name)
         params['ContentType'] = content_type
         
-        logger.debug(f"Content type: {content_type}")
-        
         # Add cache control if configured
         if self._cache_control:
             params['CacheControl'] = self._cache_control
@@ -159,9 +215,7 @@ class CloudflareR2Storage(Storage):
             raise
     
     def _open(self, name, mode='rb'):
-        """
-        Open a file from R2.
-        """
+        """Open a file from R2."""
         name = self._normalize_name(name)
         
         try:
@@ -179,9 +233,7 @@ class CloudflareR2Storage(Storage):
             raise
     
     def delete(self, name):
-        """
-        Delete a file from R2.
-        """
+        """Delete a file from R2."""
         name = self._normalize_name(name)
         
         try:
@@ -195,9 +247,7 @@ class CloudflareR2Storage(Storage):
             raise
     
     def exists(self, name):
-        """
-        Check if a file exists in R2.
-        """
+        """Check if a file exists in R2."""
         name = self._normalize_name(name)
         
         try:
@@ -216,9 +266,7 @@ class CloudflareR2Storage(Storage):
             return False
     
     def size(self, name):
-        """
-        Return the size of a file.
-        """
+        """Return the size of a file."""
         name = self._normalize_name(name)
         
         try:
@@ -231,9 +279,7 @@ class CloudflareR2Storage(Storage):
             return 0
     
     def url(self, name):
-        """
-        Return the URL of a file.
-        """
+        """Return the URL of a file."""
         name = self._normalize_name(name)
         
         # If custom domain is set, use it
