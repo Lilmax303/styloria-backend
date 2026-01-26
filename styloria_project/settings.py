@@ -337,51 +337,43 @@ USE_CLOUD_STORAGE = os.environ.get('USE_CLOUD_STORAGE', 'False').lower() == 'tru
 
 if USE_CLOUD_STORAGE:
     INSTALLED_APPS += ["storages"]
-    # Cloudflare R2 Configuration (S3-compatible)
+    
+    # Cloudflare R2 Configuration
     AWS_ACCESS_KEY_ID = os.environ.get('R2_ACCESS_KEY_ID')
     AWS_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY')
     AWS_STORAGE_BUCKET_NAME = os.environ.get('R2_BUCKET_NAME', 'styloria-media')
-    AWS_S3_ENDPOINT_URL = os.environ.get('R2_ENDPOINT_URL')  # https://<account_id>.r2.cloudflarestorage.com
+    AWS_S3_ENDPOINT_URL = os.environ.get('R2_ENDPOINT_URL')
     AWS_S3_REGION_NAME = 'auto'
- 
+    
     # Storage settings
     AWS_DEFAULT_ACL = None
-    AWS_S3_OBJECT_PARAMETERS = {
-        'CacheControl': 'max-age=86400',  # 1 day cache
-    }
-    AWS_QUERYSTRING_AUTH = True  # Use public URLs
+    AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'max-age=86400'}
+    AWS_QUERYSTRING_AUTH = True
     AWS_S3_SIGNATURE_VERSION = "s3v4"
-
-    # Critical R2 settings
     AWS_S3_ADDRESSING_STYLE = 'path'
     AWS_S3_FILE_OVERWRITE = False
-    AWS_S3_USE_SSL = True
-    AWS_S3_VERIFY = True
-   
-    # Disable region detection (causes infinite loops with R2)
-    AWS_S3_REGION_NAME = 'auto'
-    AWS_AUTO_CREATE_BUCKET = False
     
-    # Optional: Custom domain (if you set up R2 custom domain)
+    # Custom domain (optional)
     R2_CUSTOM_DOMAIN = os.environ.get('R2_CUSTOM_DOMAIN', '')
     if R2_CUSTOM_DOMAIN:
         AWS_S3_CUSTOM_DOMAIN = R2_CUSTOM_DOMAIN
         MEDIA_URL = f'https://{R2_CUSTOM_DOMAIN}/'
     else:
-        # Use R2 public URL
         MEDIA_URL = f'{AWS_S3_ENDPOINT_URL}/{AWS_STORAGE_BUCKET_NAME}/'
 
-    # Use custom R2 storage backend (fixes region detection issues)
+    # USE OUR CUSTOM STORAGE BACKEND - NOT django-storages
     STORAGES = {
-        "default": {"BACKEND": "core.storage_backends.CloudflareR2MediaStorage"},
+        "default": {"BACKEND": "core.storage_backends.CloudflareR2Storage"},
         "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
     }
- 
-    DEFAULT_FILE_STORAGE = 'core.storage_backends.CloudflareR2MediaStorage'
+    
+    DEFAULT_FILE_STORAGE = 'core.storage_backends.CloudflareR2Storage'
+    
+    print("✅ Using CloudflareR2Storage for media files")  # Debug line - remove later
 else:
     MEDIA_URL = '/media/'
     MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
-
+    print("⚠️ Using local filesystem storage")  # Debug line - remove later
 
 # =============================================================================
 # FILE UPLOAD SETTINGS
