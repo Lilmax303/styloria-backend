@@ -350,3 +350,314 @@ If you believe this was a mistake or need assistance, please contact our support
         logger.error(f"Failed to send KYC rejection email to {to_email}")
     
     return result
+
+
+def send_certification_approved_email(certification) -> bool:
+    """
+    Send email notification when a certification is verified/approved.
+    """
+    provider = certification.provider
+    user = provider.user
+    to_email = user.email
+    
+    if not to_email:
+        logger.warning(f"Cannot send certification approval email - no email for provider {provider.id}")
+        return False
+    
+    first_name = user.first_name or user.username
+    
+    subject = "🎉 Your Certification Has Been Verified - Styloria"
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f5;">
+        <table role="presentation" style="width: 100%; border-collapse: collapse;">
+            <tr>
+                <td style="padding: 40px 0;">
+                    <table role="presentation" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                        
+                        <!-- Header -->
+                        <tr>
+                            <td style="background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%); padding: 40px 30px; text-align: center;">
+                                <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">
+                                    ✓ Certification Verified!
+                                </h1>
+                            </td>
+                        </tr>
+                        
+                        <!-- Body -->
+                        <tr>
+                            <td style="padding: 40px 30px;">
+                                <p style="margin: 0 0 20px; font-size: 18px; color: #1f2937;">
+                                    Hi <strong>{first_name}</strong>,
+                                </p>
+                                
+                                <p style="margin: 0 0 20px; font-size: 16px; color: #4b5563; line-height: 1.6;">
+                                    Great news! 🎉 Your certification has been verified by our team.
+                                </p>
+                                
+                                <!-- Certification Box -->
+                                <table role="presentation" style="width: 100%; margin: 30px 0;">
+                                    <tr>
+                                        <td style="background-color: #f0fdf4; border-left: 4px solid #22c55e; padding: 20px; border-radius: 0 8px 8px 0;">
+                                            <p style="margin: 0 0 10px; font-size: 14px; font-weight: 600; color: #166534;">
+                                                📜 Certification Details:
+                                            </p>
+                                            <p style="margin: 0 0 5px; font-size: 14px; color: #15803d;">
+                                                <strong>Name:</strong> {certification.name}
+                                            </p>
+                                            <p style="margin: 0 0 5px; font-size: 14px; color: #15803d;">
+                                                <strong>Issuing Organization:</strong> {certification.issuing_organization or 'N/A'}
+                                            </p>
+                                            <p style="margin: 0; font-size: 14px; color: #15803d;">
+                                                <strong>Status:</strong> <span style="background-color: #22c55e; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px;">✓ Verified</span>
+                                            </p>
+                                        </td>
+                                    </tr>
+                                </table>
+                                
+                                <!-- Benefits Box -->
+                                <table role="presentation" style="width: 100%; margin: 30px 0;">
+                                    <tr>
+                                        <td style="background-color: #ecfdf5; padding: 20px; border-radius: 8px;">
+                                            <p style="margin: 0 0 10px; font-size: 16px; font-weight: 600; color: #065f46;">
+                                                ✨ What this means for you:
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: #047857; line-height: 1.8;">
+                                                <li>Your profile now displays this as a verified certification</li>
+                                                <li>Clients can see you have verified credentials</li>
+                                                <li>Your trust score has been updated</li>
+                                                <li>You may now qualify for higher-tier jobs</li>
+                                            </ul>
+                                        </td>
+                                    </tr>
+                                </table>
+                                
+                                <p style="margin: 0; font-size: 16px; color: #4b5563; line-height: 1.6;">
+                                    Keep up the great work! Adding more verified certifications can further boost your trust score.
+                                </p>
+                            </td>
+                        </tr>
+                        
+                        <!-- Footer -->
+                        <tr>
+                            <td style="background-color: #f9fafb; padding: 30px; text-align: center; border-top: 1px solid #e5e7eb;">
+                                <p style="margin: 0 0 10px; font-size: 14px; color: #6b7280;">
+                                    Questions? Contact us at 
+                                    <a href="mailto:support@styloria.com" style="color: #22c55e; text-decoration: none;">support@styloria.com</a>
+                                </p>
+                                <p style="margin: 0; font-size: 12px; color: #9ca3af;">
+                                    © 2024 Styloria. All rights reserved.
+                                </p>
+                            </td>
+                        </tr>
+                        
+                    </table>
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>
+    """
+    
+    plain_content = f"""Hi {first_name},
+
+Great news! 🎉 Your certification has been verified by our team.
+
+📜 Certification Details:
+   • Name: {certification.name}
+   • Issuing Organization: {certification.issuing_organization or 'N/A'}
+   • Status: ✓ Verified
+
+What this means for you:
+   • Your profile now displays this as a verified certification
+   • Clients can see you have verified credentials
+   • Your trust score has been updated
+   • You may now qualify for higher-tier jobs
+
+Keep up the great work!
+
+Best regards,
+The Styloria Team
+
+---
+Questions? Contact us at support@styloria.com
+"""
+
+    result = _send_html_email(to_email, subject, html_content, plain_content)
+    
+    if result:
+        logger.info(f"Certification approval email sent to {to_email} for cert {certification.id}")
+    else:
+        logger.error(f"Failed to send certification approval email to {to_email}")
+    
+    return result
+
+
+def send_certification_rejected_email(certification, reason=None) -> bool:
+    """
+    Send email notification when a certification is rejected/unverified.
+    """
+    provider = certification.provider
+    user = provider.user
+    to_email = user.email
+    
+    if not to_email:
+        logger.warning(f"Cannot send certification rejection email - no email for provider {provider.id}")
+        return False
+  
+    first_name = user.first_name or user.username
+    
+    subject = "Styloria Certification Update - Action May Be Required"
+    
+    reason_html = ""
+    reason_plain = ""
+    if reason:
+        reason_html = f"""
+        <table role="presentation" style="width: 100%; margin: 20px 0;">
+            <tr>
+                <td style="background-color: #fef2f2; border-left: 4px solid #ef4444; padding: 20px; border-radius: 0 8px 8px 0;">
+                    <p style="margin: 0 0 10px; font-size: 14px; font-weight: 600; color: #991b1b;">
+                        Reason provided:
+                    </p>
+                    <p style="margin: 0; font-size: 14px; color: #7f1d1d; line-height: 1.6;">
+                        {reason}
+                    </p>
+                </td>
+            </tr>
+        </table>
+        """
+        reason_plain = f"\nReason: {reason}\n"
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f5;">
+        <table role="presentation" style="width: 100%; border-collapse: collapse;">
+            <tr>
+                <td style="padding: 40px 0;">
+                    <table role="presentation" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                        
+                        <!-- Header -->
+                        <tr>
+                            <td style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 40px 30px; text-align: center;">
+                                <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">
+                                    Certification Update
+                                </h1>
+                            </td>
+                        </tr>
+                        
+                        <!-- Body -->
+                        <tr>
+                            <td style="padding: 40px 30px;">
+                                <p style="margin: 0 0 20px; font-size: 18px; color: #1f2937;">
+                                    Hi <strong>{first_name}</strong>,
+                                </p>
+                                
+                                <p style="margin: 0 0 20px; font-size: 16px; color: #4b5563; line-height: 1.6;">
+                                    We were unable to verify your certification at this time.
+                                </p>
+                                
+                                <!-- Certification Info -->
+                                <table role="presentation" style="width: 100%; margin: 20px 0;">
+                                    <tr>
+                                        <td style="background-color: #fefce8; border-left: 4px solid #f59e0b; padding: 20px; border-radius: 0 8px 8px 0;">
+                                            <p style="margin: 0 0 5px; font-size: 14px; color: #854d0e;">
+                                                <strong>Certification:</strong> {certification.name}
+                                            </p>
+                                            <p style="margin: 0; font-size: 14px; color: #854d0e;">
+                                                <strong>Organization:</strong> {certification.issuing_organization or 'N/A'}
+                                            </p>
+                                        </td>
+                                    </tr>
+                                </table>
+                                
+                                {reason_html}
+                                
+                                <!-- Tips Box -->
+                                <table role="presentation" style="width: 100%; margin: 30px 0;">
+                                    <tr>
+                                        <td style="background-color: #fffbeb; padding: 20px; border-radius: 8px;">
+                                            <p style="margin: 0 0 10px; font-size: 16px; font-weight: 600; color: #92400e;">
+                                                Tips for successful verification:
+                                            </p>
+                                            <ul style="margin: 0; padding-left: 20px; color: #a16207; line-height: 1.8; font-size: 14px;">
+                                                <li>Ensure document is clear and readable</li>
+                                                <li>Upload the complete certificate (not cropped)</li>
+                                                <li>Make sure the certification is not expired</li>
+                                                <li>Include your name on the certification</li>
+                                                <li>Use PNG, JPG, or PDF format</li>
+                                            </ul>
+                                        </td>
+                                    </tr>
+                                </table>
+                                
+                                <p style="margin: 0; font-size: 16px; color: #4b5563; line-height: 1.6;">
+                                    You can delete this certification and re-upload with an updated document.
+                                    If you believe this was a mistake, please contact our support team.
+                                </p>
+                            </td>
+                        </tr>
+                        
+                        <!-- Footer -->
+                        <tr>
+                            <td style="background-color: #f9fafb; padding: 30px; text-align: center; border-top: 1px solid #e5e7eb;">
+                                <p style="margin: 0 0 10px; font-size: 14px; color: #6b7280;">
+                                    Need help? Contact us at 
+                                    <a href="mailto:support@styloria.com" style="color: #3b82f6; text-decoration: none;">support@styloria.com</a>
+                                </p>
+                                <p style="margin: 0; font-size: 12px; color: #9ca3af;">
+                                    © 2024 Styloria. All rights reserved.
+                                </p>
+                            </td>
+                        </tr>
+                        
+                    </table>
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>
+    """
+    
+    plain_content = f"""Hi {first_name},
+
+We were unable to verify your certification at this time.
+
+Certification: {certification.name}
+Organization: {certification.issuing_organization or 'N/A'}
+{reason_plain}
+Tips for successful verification:
+   • Ensure document is clear and readable
+   • Upload the complete certificate (not cropped)
+   • Make sure the certification is not expired
+   • Include your name on the certification
+   • Use PNG, JPG, or PDF format
+
+You can delete this certification and re-upload with an updated document.
+If you believe this was a mistake, please contact our support team.
+
+Best regards,
+The Styloria Team
+
+---
+Need help? Contact us at support@styloria.com
+"""
+    
+    result = _send_html_email(to_email, subject, html_content, plain_content)
+  
+    if result:
+        logger.info(f"Certification rejection email sent to {to_email} for cert {certification.id}")
+    else:
+        logger.error(f"Failed to send certification rejection email to {to_email}")
+    
+    return result

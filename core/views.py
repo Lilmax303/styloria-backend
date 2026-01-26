@@ -2052,7 +2052,10 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
                 expiry_date=request.data.get('expiry_date') or None,
             )
         except Exception as e:
-            logger.error(f"Failed to create certification for provider {provider.id}: {str(e)}")
+            # Log the full exception details for debugging
+            import traceback
+            logger.error(f"Failed to create certification for provider {provider.id}: {type(e).__name__}: {str(e)}")
+            logger.error(f"Full traceback:\n{traceback.format_exc()}")
             
             # Check if it's a storage-related error
             error_str = str(e).lower()
@@ -2060,11 +2063,13 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
                 return Response({
                     "detail": "Failed to upload document. Please try again or contact support if the issue persists.",
                     "error_code": "storage_error",
+                    "debug_message": str(e) if settings.DEBUG else None,
                 }, status=500)
             
             return Response({
                 "detail": "Failed to add certification. Please try again.",
                 "error_code": "creation_failed",
+                "debug_message": str(e) if settings.DEBUG else None,
             }, status=500)
         
         serializer = ProviderCertificationSerializer(
