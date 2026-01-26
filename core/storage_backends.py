@@ -2,8 +2,7 @@
 
 """
 Custom storage backend for Cloudflare R2.
-This is a standalone implementation that doesn't inherit from S3Boto3Storage,
-avoiding all the region detection issues that cause infinite retry loops.
+Standalone implementation that avoids region detection issues.
 """
 
 import os
@@ -16,6 +15,12 @@ from django.conf import settings
 from django.core.files.base import File, ContentFile
 from django.core.files.storage import Storage
 from django.utils.deconstruct import deconstructible
+
+# Import botocore exception properly
+try:
+    from botocore.exceptions import ClientError
+except ImportError:
+    ClientError = Exception
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +49,8 @@ class CloudflareR2Storage(Storage):
         obj_params = getattr(settings, 'AWS_S3_OBJECT_PARAMETERS', {})
         if obj_params:
             self._cache_control = obj_params.get('CacheControl')
+        
+        logger.info(f"CloudflareR2Storage initialized: bucket={self._bucket_name}, endpoint={self._endpoint_url}")
     
     @property
     def client(self):
@@ -60,6 +67,8 @@ class CloudflareR2Storage(Storage):
         """
         import boto3
         from botocore.config import Config
+        
+        logger.debug(f"Creating boto3 client for R2: endpoint={self._endpoint_url}")
         
         # Configuration that works with R2
         config = Config(
@@ -82,6 +91,7 @@ class CloudflareR2Storage(Storage):
             config=config,
         )
         
+        logger.debug("boto3 client created successfully")
         return client
     
     def _normalize_name(self, name):
@@ -113,9 +123,13 @@ class CloudflareR2Storage(Storage):
         """
         name = self._normalize_name(name)
         
+        logger.info(f"CloudflareR2Storage._save called: name={name}")
+        
         # Read the content
         content.seek(0)
         data = content.read()
+        
+        logger.debug(f"Read {len(data)} bytes from content")
         
         # Prepare upload parameters
         params = {
@@ -129,6 +143,8 @@ class CloudflareR2Storage(Storage):
         if not content_type:
             content_type = self._get_content_type(name)
         params['ContentType'] = content_type
+        
+        logger.debug(f"Content type: {content_type}")
         
         # Add cache control if configured
         if self._cache_control:
@@ -190,10 +206,10 @@ class CloudflareR2Storage(Storage):
                 Key=name,
             )
             return True
-        except self.client.exceptions.ClientError as e:
-            if e.response.get('Error', {}).get('Code') == '404':
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            if error_code == '404':
                 return False
-            # For other errors, log and return False
             logger.warning(f"Error checking existence of '{name}': {str(e)}")
             return False
         except Exception:
@@ -240,25 +256,15 @@ class CloudflareR2Storage(Storage):
                 logger.error(f"Failed to generate presigned URL for '{name}': {str(e)}")
         
         # Fallback to direct URL construction
-        # Note: This won't work unless the bucket is public
         return f"{self._endpoint_url}/{self._bucket_name}/{name}"
     
     def get_accessed_time(self, name):
-        """
-        R2 doesn't track access time, return modified time.
-        """
         return self.get_modified_time(name)
     
     def get_created_time(self, name):
-        """
-        R2 doesn't track creation time separately, return modified time.
-        """
         return self.get_modified_time(name)
     
     def get_modified_time(self, name):
-        """
-        Return the last modified time of a file.
-        """
         name = self._normalize_name(name)
         
         try:
@@ -271,10 +277,7 @@ class CloudflareR2Storage(Storage):
             return datetime.now()
     
     def listdir(self, path=''):
-        """
-        List contents of a directory in R2.
-        """
-        path = self._normalize_name(path)
+        path = self._normalize_name(path) or ''
         if path and not path.endswith('/'):
             path += '/'
         
@@ -285,13 +288,11 @@ class CloudflareR2Storage(Storage):
             paginator = self.client.get_paginator('list_objects_v2')
             
             for page in paginator.paginate(Bucket=self._bucket_name, Prefix=path, Delimiter='/'):
-                # Get "directories" (common prefixes)
                 for prefix in page.get('CommonPrefixes', []):
                     dir_name = prefix['Prefix'][len(path):].rstrip('/')
                     if dir_name:
                         directories.add(dir_name)
                 
-                # Get files
                 for obj in page.get('Contents', []):
                     file_name = obj['Key'][len(path):]
                     if file_name and '/' not in file_name:
@@ -303,17 +304,14 @@ class CloudflareR2Storage(Storage):
             return [], []
     
     def get_available_name(self, name, max_length=None):
-        """
-        Return a filename that's free on the storage.
-        """
         name = self._normalize_name(name)
         
         if self.exists(name):
-            # Add timestamp to make unique
             dir_name, file_name = os.path.split(name)
             file_root, file_ext = os.path.splitext(file_name)
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
             name = os.path.join(dir_name, f"{file_root}_{timestamp}{file_ext}")
+            name = name.replace('\\', '/')
         
         return name
 
