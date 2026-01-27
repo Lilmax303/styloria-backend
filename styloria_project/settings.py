@@ -128,8 +128,11 @@ if DATABASE_URL:
     DATABASES = {
         'default': dj_database_url.config(
             default=DATABASE_URL,
-            conn_max_age=600,
+            conn_max_age=0,
             conn_health_checks=True,
+            options={
+                'connect_timeout': 10,
+            }
         )
     }
 else:
@@ -142,6 +145,10 @@ else:
             'PASSWORD': os.getenv('DB_PASSWORD', ''),
             'HOST': os.getenv('DB_HOST', 'localhost'),
             'PORT': os.getenv('DB_PORT', '5432'),
+            'CONN_MAX_AGE': 0,  # Add this
+            'OPTIONS': {
+                'connect_timeout': 10,
+            }
         }
     }
 
