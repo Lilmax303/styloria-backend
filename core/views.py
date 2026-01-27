@@ -2105,11 +2105,15 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
             "trust_score": calculate_provider_trust_score(provider),
             "current_tier": get_provider_tier(provider),
         }, status=201)
+
+    @action(detail=False, methods=['delete'], url_path='delete_certification/(?P<cert_id>[0-9]+)')
     def delete_certification(self, request, cert_id=None):
         """
         DELETE /api/service_providers/delete_certification/<cert_id>/
         Delete a certification.
         """
+
+
         try:
             provider = ServiceProvider.objects.get(user=request.user)
         except ServiceProvider.DoesNotExist:
