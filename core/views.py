@@ -2197,6 +2197,7 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
         Create a booking:
         - status='pending' (waiting for payment)
         - payment_status='unpaid'
+        - currency based on user's country
         - estimated_price based on nearest verified provider distance (simple logic)
         """
         if not getattr(self.request.user, "email_verified", False):
@@ -2231,6 +2232,13 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
             transportation_cost = min_distance * Decimal("0.8")
             estimated_price = transportation_cost
 
+        # ═══════════════════════════════════════════════════════════════════
+        # NEW: Set currency based on user's country and payment gateway
+        # ═══════════════════════════════════════════════════════════════════
+        from core.utils.payment_routing import get_booking_currency_for_user
+    
+        user_currency = get_booking_currency_for_user(self.request.user)
+
 
         req = serializer.save(
             user=self.request.user,
@@ -2238,6 +2246,7 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
             service_provider=None,
             status="pending",
             payment_status="unpaid",
+            currency=user_currency,  # ← NEW: Set currency at creation time
         )
 
         if not has_provider:
@@ -3317,30 +3326,28 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
     def tip_create_payment_intent(self, request, pk=None):
         """
         POST /api/service_requests/<id>/tip/create_payment_intent/
-        Body: { "tip_amount": 12.34 }
 
-        Creates a Stripe PaymentIntent for tipping (after completion).
-        Only for non-African users. African users must use Flutterwave.
         """
         if not getattr(request.user, "email_verified", False):
-            return Response(
-                {"detail": "Verify your email before making payments."}, 
-                status=403,
-            )
+            return Response({"detail": "Verify your email before making payments."}, status=403)
 
-        # African users must use Flutterwave for tips
+        # ═══════════════════════════════════════════════════════════════════
+        # GATEWAY CHECK
+        # ═══════════════════════════════════════════════════════════════════
+        from core.utils.paystack_countries import get_payment_gateway_for_country
+    
         user_country = (request.user.country_name or "").strip()
-        if is_african_country_name(user_country):
-            return Response(
-                {
-                    "detail": "Tip payments in your country are processed via Flutterwave.",
-                    "error_code": "flutterwave_required",
-                    "country": user_country,
-                },
-                status=403,
-            )  
+        correct_gateway = get_payment_gateway_for_country(user_country)
+    
+        if correct_gateway != "stripe":
+            return Response({
+                "detail": f"Tip payments in your country are processed via {correct_gateway.title()}.",
+                "error_code": f"{correct_gateway}_required",
+            }, status=403)
+        # ═══════════════════════════════════════════════════════════════════
 
         service_request = self.get_object()
+
 
         if service_request.user != request.user:
             return Response(
@@ -3382,16 +3389,24 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
                 status=200,
             )
 
-
-        currency_u = (service_request.currency or "USD").upper().strip()
+        # ═══════════════════════════════════════════════════════════════════
+        # CURRENCY VALIDATION
+        # ═══════════════════════════════════════════════════════════════════
+        from core.utils.payment_routing import validate_and_convert_for_stripe, normalize_currency
+    
+        booking_currency = normalize_currency(service_request.currency)
+        final_tip, final_currency, was_converted = validate_and_convert_for_stripe(
+            tip_amount, booking_currency, request.user
+        )
+        # ═══════════════════════════════════════════════════════════════════
 
         stripe.api_key = settings.STRIPE_SECRET_KEY
-        amount_int = _to_stripe_minor_units(tip_amount, currency_u)
+        amount_int = _to_stripe_minor_units(final_tip, final_currency)
 
         try:
             pi = stripe.PaymentIntent.create(
                 amount=amount_int,
-                currency=currency_u.lower(),
+                currency=final_currency.lower(),
                 automatic_payment_methods={"enabled": True},
                 metadata={
                     "type": "tip",
@@ -3400,19 +3415,37 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
                 },
             )
 
-            # Store tip PI id on the booking (field must exist in model)
-            service_request.stripe_tip_payment_intent_id = pi.id
-            service_request.save(update_fields=["stripe_tip_payment_intent_id"])
+        except stripe.error.InvalidRequestError as e:
+            error_message = str(e).lower()
+            if "payment method" in error_message:
+                try:
+                    pi = stripe.PaymentIntent.create(
+                        amount=amount_int,
+                        currency=final_currency.lower()
+                        payment_method_types=["card"],
+                        metadata={
+                            "type": "tip"
+                            "service_request_id": str(service_request.id),
+                            "user_id": str(request.user.id),
+                        },
+                    )
+                except stripe.error.StripeError as fallback_e:
+                    return Response({"detail": str(fallback_e)}, status=400)
+            else:
+                return Response({"detail": str(e)}, status=400)
 
         except stripe.error.StripeError as e:
             return Response({"detail": str(e)}, status=400)
+
+        service_request.stripe_tip_payment_intent_id = pi.id
+        service_request.save(update_fields=["stripe_tip_payment_intent_id"])
 
         return Response(
             {
                 "client_secret": pi["client_secret"],
                 "payment_intent_id": pi["id"],
-                "currency": currency_u.lower(),
-                "tip_amount": str(tip_amount),
+                "currency": final_currency.lower(),
+                "tip_amount": str(final_tip),
             },
             status=200,
         )
@@ -4684,6 +4717,9 @@ def _to_stripe_minor_units(amount: Decimal, currency: str) -> int:
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_payment(request):
+    """
+    Create Stripe PaymentIntent for non-African users.
+    """
     if not getattr(request.user, "email_verified", False):
         return Response({"error": "Verify your email before making payments."}, status=403)
 
@@ -4701,17 +4737,32 @@ def create_payment(request):
     if service_request.user != request.user:
         return Response({"error": "Not allowed to pay for this booking"}, status=403)
 
-    # STRICT RULE: Africa => Flutterwave only (no Stripe attempts)
+    # ═══════════════════════════════════════════════════════════════════
+    # GATEWAY ROUTING CHECK
+    # ═══════════════════════════════════════════════════════════════════
+    from core.utils.payment_routing import (
+        validate_and_convert_for_stripe,
+        normalize_currency,
+    )
+    from core.utils.paystack_countries import get_payment_gateway_for_country
+
     user_country = (request.user.country_name or "").strip()
-    if is_african_country_name(user_country):
-        return Response(
-            {
-                "error_code": "flutterwave_required",
-                "error": "Payments in your country are processed via Flutterwave.",
-                "country": user_country,
-            },
-            status=403,
-        )
+    correct_gateway = get_payment_gateway_for_country(user_country)
+    
+    if correct_gateway == "paystack":
+        return Response({
+            "error": "Please use Paystack for payments in your country.",
+            "error_code": "paystack_required",
+            "correct_gateway": "paystack",
+        }, status=403)
+    
+    if correct_gateway == "flutterwave":
+        return Response({
+            "error": "Please use Flutterwave for payments in your country.",
+            "error_code": "flutterwave_required", 
+            "correct_gateway": "flutterwave",
+        }, status=403)
+    # ═══════════════════════════════════════════════════════════════════
 
     # Only allow paying while booking is still pending payment
     if service_request.status != "pending" or service_request.payment_status != "unpaid":
@@ -4735,6 +4786,7 @@ def create_payment(request):
             status=400,
         )
 
+    # Get amount
     offered_override = request.data.get("offered_price")
     if offered_override is not None:
         try:
@@ -4750,17 +4802,40 @@ def create_payment(request):
     if amount_source <= 0:
         return Response({"error": "Amount must be positive"}, status=400)
 
-    # Persist the amount being paid so the booking record reflects the selected total,
-    # even if the client fails to call set_offered_price after Stripe succeeds.
-    if offered_override is not None and service_request.offered_price != amount_source:
-        service_request.offered_price = amount_source
-        service_request.save(update_fields=["offered_price"])
+    # ═══════════════════════════════════════════════════════════════════
+    # CURRENCY VALIDATION & CONVERSION
+    # ═══════════════════════════════════════════════════════════════════
+    booking_currency = normalize_currency(service_request.currency)
+    
+    # Validate and convert if necessary
+    final_amount, final_currency, was_converted = validate_and_convert_for_stripe(
+        amount_source, booking_currency, request.user
+    )
 
-    currency_u = (service_request.currency or "USD").upper().strip()
+    # Update service request if currency was converted
+    if was_converted or service_request.currency != final_currency:
+        service_request.currency = final_currency
+        service_request.offered_price = final_amount
+        service_request.save(update_fields=["currency", "offered_price"])
+    elif offered_override is not None and service_request.offered_price != amount_source:
+        service_request.offered_price = final_amount
+        service_request.save(update_fields=["offered_price"])
+    
+    # Log if conversion happened (for debugging)
+    if was_converted:
+        import logging
+        logging.getLogger(__name__).info(
+            f"Currency converted for booking #{service_request.id}: "
+            f"{booking_currency} {amount_source} → {final_currency} {final_amount}"
+        )
+    # ═══════════════════════════════════════════════════════════════════
+
+    currency_u = final_currency.upper()
     currency = currency_u.lower()
 
+    # Minimum amount check
     min_amount = _min_amount_for_currency(currency_u)
-    if amount_source < min_amount:
+    if final_amount < min_amount:
         return Response(
             {
                 "error": f"Amount is below the minimum allowed for {currency_u}. Minimum is {min_amount} {currency_u}.",
@@ -4770,9 +4845,15 @@ def create_payment(request):
             status=400,
         )
 
-    amount_int = _to_stripe_minor_units(Decimal(str(amount_source)), currency_u)
+    amount_int = _to_stripe_minor_units(final_amount, currency_u)
+
+
+    # ═══════════════════════════════════════════════════════════════════
+    # CREATE STRIPE PAYMENT INTENT WITH FALLBACK
+    # ═══════════════════════════════════════════════════════════════════
 
     try:
+        # Try automatic_payment_methods first (recommended by Stripe)
         payment_intent = stripe.PaymentIntent.create(
             amount=amount_int,
             currency=currency,
@@ -4782,13 +4863,39 @@ def create_payment(request):
                 "user_id": str(request.user.id),
             },
         )
+    except stripe.error.InvalidRequestError as e:
+        error_message = str(e).lower()
 
-        service_request.stripe_payment_intent_id = payment_intent.id
-        service_request.payment_gateway = "stripe"
-        service_request.save(update_fields=["stripe_payment_intent_id", "payment_gateway"])
-
+        # If automatic_payment_methods fails due to currency, try explicit card
+        if "payment method" in error_message or "payment_method" in error_message:
+            try:
+                payment_intent = stripe.PaymentIntent.create(
+                    amount=amount_int,
+                    currency=currency,
+                    payment_method_types=["card"],
+                    metadata={
+                        "service_request_id": str(service_request_id),
+                        "user_id": str(request.user.id),
+                    },
+                )
+            except stripe.error.StripeError as fallback_error:
+                import logging
+                logging.getLogger(__name__).error(
+                    f"Stripe fallback failed for {currency}: {fallback_error}"
+                )
+                return Response({
+                    "error": f"Unable to process payment in {currency_u}. Please contact support.",
+                    "error_code": "payment_method_unavailable",
+                }, status=400)
+        else:
+            return Response({"error": str(e)}, status=400)
     except stripe.error.StripeError as e:
         return Response({"error": str(e)}, status=400)
+    # ═══════════════════════════════════════════════════════════════════
+
+    service_request.stripe_payment_intent_id = payment_intent.id
+    service_request.payment_gateway = "stripe"
+    service_request.save(update_fields=["stripe_payment_intent_id", "payment_gateway"])
 
     return Response(
         {
@@ -4796,6 +4903,8 @@ def create_payment(request):
             "payment_intent_id": payment_intent.id,
             "message": "Payment will be held until service completion",
             "currency": currency,
+            "amount": float(final_amount),
+            "currency_converted": was_converted,
         }
     )
 
