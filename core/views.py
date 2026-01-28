@@ -3421,10 +3421,10 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
                 try:
                     pi = stripe.PaymentIntent.create(
                         amount=amount_int,
-                        currency=final_currency.lower()
+                        currency=final_currency.lower(),
                         payment_method_types=["card"],
                         metadata={
-                            "type": "tip"
+                            "type": "tip",
                             "service_request_id": str(service_request.id),
                             "user_id": str(request.user.id),
                         },
