@@ -674,6 +674,9 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
     requester_average_rating = serializers.SerializerMethodField()
     requester_review_count = serializers.SerializerMethodField()
 
+    # Auto-cancel warning for unpaid bookings
+    auto_cancel_warning = serializers.SerializerMethodField()
+
     class Meta:
         model = ServiceRequest
         fields = [
@@ -739,6 +742,7 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             "requester_address",
             "requester_average_rating",
             "requester_review_count",
+            "auto_cancel_warning",
         ]
         # Keep booking/payment truth server-controlled.
         read_only_fields = [
@@ -788,6 +792,10 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             "provider_cancellation_fee",
         ]
 
+    def get_auto_cancel_warning(self, obj):
+        """Return warning info if booking is approaching auto-cancel deadline."""
+        from core.utils.booking_cleanup import get_booking_staleness_warning
+        return get_booking_staleness_warning(obj)
 
     def get_distance_miles(self, obj):
         return getattr(obj, "distance_miles", None)
@@ -891,8 +899,9 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
         if not obj.service_provider_id:
             return []
 
-        # Only show after provider accepts (and during job)
-        if obj.status not in ("accepted", "in_progress", "completed"):
+        # Only show while job is active (accepted or in_progress)
+        # Hide portfolio once job is completed for privacy
+        if obj.status not in ("accepted", "in_progress"):
             return []
 
         # OPTIONAL: if you truly want only the first 7 minutes after acceptance:

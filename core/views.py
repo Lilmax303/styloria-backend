@@ -2203,6 +2203,12 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
         if not getattr(self.request.user, "email_verified", False):
             raise PermissionDenied("Verify your email before creating a booking.")
 
+        # Lazy cleanup: cancel this user's stale unpaid bookings before creating new one
+        try:
+            cancel_stale_unpaid_bookings(user=self.request.user)
+        except Exception:
+            pass  # Don't block booking creation if cleanup fails
+
         user_lat = serializer.validated_data["location_latitude"]
         user_lng = serializer.validated_data["location_longitude"]
         user_location = (user_lat, user_lng)
@@ -2309,6 +2315,21 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated])
     def my_requests(self, request):
+        # Lazy cleanup: cancel user's stale unpaid bookings
+        try:
+            cancelled = cancel_stale_unpaid_bookings(user=request.user)
+            if cancelled > 0:
+                # Send WebSocket notification if any were cancelled
+                from core.views import send_websocket_notification
+                send_websocket_notification(
+                    request.user,
+                    f"{cancelled} booking(s) were automatically cancelled due to non-payment after 48 hours.",
+                    notification_type="booking_auto_cancelled",
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Error in stale booking cleanup: {e}")
+
         qs = self.get_queryset().filter(user=request.user).order_by("-request_time")
         serializer = self.get_serializer(qs, many=True, context={"request": request})
         return Response(serializer.data)
@@ -2319,6 +2340,15 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
             provider = ServiceProvider.objects.get(user=request.user)
         except ServiceProvider.DoesNotExist:
             return Response({"detail": "You are not a provider"}, status=400)
+
+        # Lazy cleanup: run global cleanup occasionally (1 in 10 requests)
+        import random
+        if random.random() < 0.1:  # 10% chance
+            try:
+                cancel_stale_unpaid_bookings(user=None)  # Global cleanup
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Error in global stale booking cleanup: {e}")
 
         qs = self.get_queryset().filter(service_provider=provider).order_by("-request_time")
         serializer = self.get_serializer(qs, many=True, context={"request": request})
@@ -2876,6 +2906,82 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(service_request, context={"request": request})
         return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
+    def reset_appointment_time(self, request, pk=None):
+        """
+        Reset appointment time for unpaid bookings.
+        Used when user returns to pay after leaving booking unpaid.
+
+        Rules:
+        - Only booking owner can reset
+        - Only unpaid/pending bookings can be reset
+        - New appointment time must be TODAY (same day)
+        - New appointment time must be in the future (not past)
+        """
+        service_request = self.get_object()
+
+        # Only booking owner can reset
+        if service_request.user != request.user:
+            return Response({"detail": "You do not own this request."}, status=403)
+
+        # Only allow reset for unpaid/pending bookings
+        if service_request.payment_status == "paid":
+            return Response({"detail": "This booking is already paid."}, status=400)
+
+        if service_request.status not in ("pending", "open"):
+            return Response({
+                "detail": "Only pending bookings can have their appointment time reset."
+            }, status=400)
+
+        new_appointment_time = request.data.get("appointment_time")
+        if not new_appointment_time:
+            return Response({"detail": "appointment_time is required."}, status=400)
+
+        try:
+            # Parse the new appointment time
+            from django.utils.dateparse import parse_datetime
+            new_dt = parse_datetime(new_appointment_time)
+            if new_dt is None:
+                raise ValueError("Invalid datetime format")
+
+            # Make timezone aware if not already
+            if new_dt.tzinfo is None:
+                new_dt = timezone.make_aware(new_dt)
+ 
+        except (ValueError, TypeError) as e:
+            return Response({
+                "detail": f"Invalid appointment_time format. Use ISO format (YYYY-MM-DDTHH:MM:SS). Error: {str(e)}"
+            }, status=400)
+
+        now = timezone.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+
+        # Validation 1: Must be today
+        if new_dt < today_start or new_dt >= today_end:
+            return Response({
+                "detail": "Appointment time must be scheduled for today only.",
+                "error_code": "not_today"
+            }, status=400)
+
+        # Validation 2: Must be in the future (at least 30 minutes from now)
+        min_future_time = now + timedelta(minutes=30)
+        if new_dt < min_future_time:
+            return Response({
+                "detail": "Appointment time must be at least 30 minutes from now.",
+                "error_code": "time_too_soon"
+            }, status=400)
+
+        # Update the appointment time
+        service_request.appointment_time = new_dt
+        service_request.save(update_fields=["appointment_time"])
+
+        serializer = self.get_serializer(service_request, context={"request": request})
+        return Response({
+            "detail": "Appointment time updated successfully.",
+            "booking": serializer.data
+        })
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     def cancel(self, request, pk=None):
