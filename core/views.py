@@ -6492,6 +6492,34 @@ def clear_all_notifications(request):
     count, _ = Notification.objects.filter(user=request.user).delete()
     return Response({"detail": f"Deleted {count} notifications."}, status=200)
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def delete_selected_notifications(request):
+    """
+    Delete multiple notifications by IDs.
+    
+    POST /api/notifications/delete_selected/
+    Body: {"ids": [1, 2, 3, 4, 5]}
+    """
+    ids = request.data.get('ids', [])
+    
+    if not ids:
+        return Response({"detail": "No notification IDs provided."}, status=400)
+    
+    if not isinstance(ids, list):
+        return Response({"detail": "ids must be a list."}, status=400)
+    
+    # Only delete notifications belonging to the current user
+    deleted_count, _ = Notification.objects.filter(
+        id__in=ids,
+        user=request.user
+    ).delete()
+    
+    return Response({
+        "detail": f"Deleted {deleted_count} notification(s).",
+        "deleted_count": deleted_count,
+    }, status=200)
+
 
 # -------------------
 # ADMIN PAYOUT TOOLING
