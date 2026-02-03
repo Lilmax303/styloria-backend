@@ -7501,14 +7501,6 @@ def update_location(request):
                 notification_type="provider_arrived",
             )
 
-    other_party_user = booking.user if is_provider else (booking.service_provider.user if booking.service_provider else None)
-    if other_party_user and not provider_arrived:
-        send_websocket_notification(
-            other_party_user,
-            f"📍 Location updated for booking #{booking_id}",
-            notification_type="location_updated",
-        )
-
     return Response({
         "status": "success",
         "provider_arrived": provider_arrived,
