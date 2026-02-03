@@ -48,6 +48,9 @@ urlpatterns = [
     path('api/token/', EmailOrUsernameTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 
+    # FCM Push Notifications
+    # path('api/fcm/register/', core_views.register_fcm_token, name='register_fcm_token'),
+
     # Email verification / password reset / username reminder
     path('api/auth/email/send-verification/', core_views.send_email_verification, name='send_email_verification'),
     path('api/auth/email/confirm-verification/', core_views.confirm_email_verification, name='confirm_email_verification'),

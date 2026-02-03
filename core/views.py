@@ -5189,6 +5189,15 @@ def stripe_webhook(request):
             "provider_net_amount",
         ])
 
+    # Notify eligible providers of the new job
+    try:
+        from core.utils import notify_eligible_providers_of_new_job
+        sr_refresh = ServiceRequest.objects.get(pk=sr.pk)
+        notify_eligible_providers_of_new_job(sr_refresh)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to notify providers for job #{sr.pk}: {e}")
+
     return Response(status=200)
 
 @api_view(["POST"])
@@ -5299,6 +5308,15 @@ def stripe_confirm_payment(request):
         ])
 
     sr_refresh = ServiceRequest.objects.get(pk=sr.pk)
+
+    # Notify eligible providers of the new job
+    try:
+        from core.utils import notify_eligible_providers_of_new_job
+        notify_eligible_providers_of_new_job(sr_refresh)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to notify providers for job #{sr.pk}: {e}")
+
     return Response(
         {"detail": "confirmed", "booking": ServiceRequestSerializer(sr_refresh, context={"request": request}).data},
         status=200,
@@ -5627,6 +5645,15 @@ def verify_flutterwave_payment(request):
             ])
 
     sr_refresh = ServiceRequest.objects.get(pk=sr.pk)
+
+    # Notify eligible providers of the new job
+    try:
+        from core.utils import notify_eligible_providers_of_new_job
+        notify_eligible_providers_of_new_job(sr_refresh)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to notify providers for job #{sr.pk}: {e}")
+
     return Response(
         {"verified": True, "booking": ServiceRequestSerializer(sr_refresh, context={"request": request}).data},
         status=200,
@@ -5716,6 +5743,15 @@ def verify_flutterwave_by_txref(request):
             ])
     
     sr.refresh_from_db()
+
+    # Notify eligible providers of the new job
+    try:
+        from core.utils import notify_eligible_providers_of_new_job
+        notify_eligible_providers_of_new_job(sr)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to notify providers for job #{sr.pk}: {e}")
+
     return Response({
         "verified": True,
         "booking": ServiceRequestSerializer(sr, context={"request": request}).data
@@ -5991,6 +6027,15 @@ def verify_paystack_payment(request):
             ])
     
     sr.refresh_from_db()
+
+    # Notify eligible providers of the new job
+    try:
+        from core.utils import notify_eligible_providers_of_new_job
+        notify_eligible_providers_of_new_job(sr)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to notify providers for job #{sr.pk}: {e}")
+
     return Response({
         "verified": True,
         "booking": ServiceRequestSerializer(sr, context={"request": request}).data
@@ -6130,6 +6175,15 @@ def _handle_paystack_charge_success(data: dict) -> None:
             "provider_earnings_amount",
             "provider_net_amount",
         ])
+
+    # Notify eligible providers of the new job (outside transaction)
+    try:
+        from core.utils import notify_eligible_providers_of_new_job
+        sr_refresh = ServiceRequest.objects.get(pk=sr.pk)
+        notify_eligible_providers_of_new_job(sr_refresh)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to notify providers for job #{sr.pk}: {e}")
 
 
 @api_view(["POST"])

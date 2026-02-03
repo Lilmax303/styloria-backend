@@ -1279,6 +1279,26 @@ class Notification(models.Model):
         return f"{self.user} - {self.message[:30]}"
 
 
+class UserFCMToken(models.Model):
+    """Store FCM tokens for push notifications."""
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, 
+        on_delete=models.CASCADE,
+        related_name='fcm_token_obj'
+    )
+    token = models.TextField()
+    device_type = models.CharField(max_length=20, choices=[
+        ('android', 'Android'),
+        ('ios', 'iOS'),
+        ('web', 'Web'),
+    ], default='android')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"FCM Token for {self.user.username}"
+
+
 class MFACode(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
