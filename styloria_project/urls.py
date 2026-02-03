@@ -37,9 +37,12 @@ urlpatterns = [
     path('api/', include(router.urls)),
 
     # Notifications
-    path("notifications/read/<int:pk>/", mark_as_read),
-    path("notifications/", list_notifications, name="list_notifications"),
-    path("notifications/unread/count/", unread_count),
+    path("api/notifications/", list_notifications, name="list_notifications"),
+    path("api/notifications/read/<int:pk>/", mark_as_read),
+    path("api/notifications/unread/count/", unread_count),
+    path("api/notifications/<int:pk>/delete/", core_views.delete_notification, name="delete_notification"),
+    path("api/notifications/mark_all_read/", core_views.mark_all_notifications_read, name="mark_all_notifications_read"),
+    path("api/notifications/clear_all/", core_views.clear_all_notifications, name="clear_all_notifications"),
 
     # JWT auth (username or email)
     path('api/token/', EmailOrUsernameTokenObtainPairView.as_view(), name='token_obtain_pair'),

@@ -4418,6 +4418,56 @@ class ChatThreadViewSet(viewsets.ModelViewSet):
         )
         serializer.is_valid(raise_exception=True)
         msg = serializer.save()
+
+        # ════════════════════════════════════════════════════════════
+        # SEND NOTIFICATION TO RECEIVER
+        # ════════════════════════════════════════════════════════════
+
+        # Determine the receiver (the other participant)
+        sender = request.user
+        if sender == service_request.user:
+            # Sender is the requester, receiver is the provider
+            receiver = provider_user
+        else:
+            # Sender is the provider, receiver is the requester
+            receiver = service_request.user
+
+        if receiver and receiver != sender:
+            # Get sender's display name
+            sender_name = sender.first_name or sender.username
+
+            # Truncate message for notification preview
+            preview = content[:50] + "..." if len(content) > 50 else content
+
+            # Send WebSocket notification
+            send_websocket_notification(
+                receiver,
+                f"💬 New message from {sender_name}: {preview}",
+                notification_type="chat_message",
+            )
+
+            # Also send via WebSocket with structured data for chat screen
+            channel_layer = get_channel_layer()
+            try:
+                async_to_sync(channel_layer.group_send)(
+                    f"notifications_{receiver.id}",
+                    {
+                        "type": "send_notification",
+                        "message": {
+                            "type": "chat_message",
+                            "thread_id": thread.id,
+                            "service_request_id": service_request.id,
+                            "sender_id": sender.id,
+                            "sender_name": sender_name,
+                            "content_preview": preview,
+                            "message_id": msg.id,
+                            "timestamp": msg.created_at.isoformat(),
+                        },
+                    },
+                )
+            except Exception:
+                pass  # WebSocket not connected
+
         return Response(ChatMessageSerializer(msg).data, status=201)
 
 
@@ -6355,6 +6405,31 @@ def list_notifications(request):
 def unread_count(request):
     count = Notification.objects.filter(user=request.user, read=False).count()
     return Response({"unread_count": count})
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def delete_notification(request, pk):
+    """Delete a notification for the current user."""
+    try:
+        notification = Notification.objects.get(pk=pk, user=request.user)
+        notification.delete()
+        return Response({"detail": "Notification deleted."}, status=200)
+    except Notification.DoesNotExist:
+        return Response({"detail": "Notification not found."}, status=404)
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def mark_all_notifications_read(request):
+    """Mark all notifications as read for the current user."""
+    count = Notification.objects.filter(user=request.user, read=False).update(read=True)
+    return Response({"detail": f"Marked {count} notifications as read."}, status=200)
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def clear_all_notifications(request):
+    """Delete all notifications for the current user."""
+    count, _ = Notification.objects.filter(user=request.user).delete()
+    return Response({"detail": f"Deleted {count} notifications."}, status=200)
 
 
 # -------------------
