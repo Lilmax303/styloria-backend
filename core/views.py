@@ -85,12 +85,19 @@ from core.services.payouts import (
     payout_wallet_paystack,
 )
 
-from core.utils import (
+from core.utils.trust_score import (
     calculate_provider_trust_score,
     get_provider_tier,
     is_provider_eligible_for_tier,
-    get_eligible_tiers,
 )
+
+# Notification functions
+from core.utils.notifications import (
+    send_websocket_notification,
+    notify_eligible_providers_of_new_job,
+)
+
+from core.utils.booking_cleanup import cancel_stale_unpaid_bookings
 
 from .models import (
     AccountDeletionFeedback,
@@ -5191,7 +5198,7 @@ def stripe_webhook(request):
 
     # Notify eligible providers of the new job
     try:
-        from core.utils import notify_eligible_providers_of_new_job
+        from core.utils.notifications import notify_eligible_providers_of_new_job
         sr_refresh = ServiceRequest.objects.get(pk=sr.pk)
         notify_eligible_providers_of_new_job(sr_refresh)
     except Exception as e:
@@ -5311,7 +5318,7 @@ def stripe_confirm_payment(request):
 
     # Notify eligible providers of the new job
     try:
-        from core.utils import notify_eligible_providers_of_new_job
+        from core.utils.notifications import notify_eligible_providers_of_new_job
         notify_eligible_providers_of_new_job(sr_refresh)
     except Exception as e:
         import logging
@@ -5648,7 +5655,7 @@ def verify_flutterwave_payment(request):
 
     # Notify eligible providers of the new job
     try:
-        from core.utils import notify_eligible_providers_of_new_job
+        from core.utils.notifications import notify_eligible_providers_of_new_job
         notify_eligible_providers_of_new_job(sr_refresh)
     except Exception as e:
         import logging
@@ -5746,7 +5753,7 @@ def verify_flutterwave_by_txref(request):
 
     # Notify eligible providers of the new job
     try:
-        from core.utils import notify_eligible_providers_of_new_job
+        from core.utils.notifications import notify_eligible_providers_of_new_job
         notify_eligible_providers_of_new_job(sr)
     except Exception as e:
         import logging
@@ -6030,7 +6037,7 @@ def verify_paystack_payment(request):
 
     # Notify eligible providers of the new job
     try:
-        from core.utils import notify_eligible_providers_of_new_job
+        from core.utils.notifications import notify_eligible_providers_of_new_job
         notify_eligible_providers_of_new_job(sr)
     except Exception as e:
         import logging
@@ -6178,7 +6185,7 @@ def _handle_paystack_charge_success(data: dict) -> None:
 
     # Notify eligible providers of the new job (outside transaction)
     try:
-        from core.utils import notify_eligible_providers_of_new_job
+        from core.utils.notifications import notify_eligible_providers_of_new_job
         sr_refresh = ServiceRequest.objects.get(pk=sr.pk)
         notify_eligible_providers_of_new_job(sr_refresh)
     except Exception as e:
