@@ -13,4 +13,4 @@ urlpatterns = [
     
     # Your existing WebSocket URL patterns
     path('ws/notifications/<str:user_id>/', NotificationConsumer.as_asgi()),
-]s
+]
