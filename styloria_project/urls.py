@@ -56,6 +56,8 @@ urlpatterns = [
     path('api/auth/email/send-verification/', core_views.send_email_verification, name='send_email_verification'),
     path('api/auth/email/confirm-verification/', core_views.confirm_email_verification, name='confirm_email_verification'),
 
+    # Profile picture deletion
+    path('api/users/me/profile_picture/', core_views.delete_profile_picture, name='delete_profile_picture'),
 
     path('api/auth/username/remind/', core_views.send_username_reminder, name='send_username_reminder'),
 

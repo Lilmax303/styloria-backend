@@ -1546,6 +1546,21 @@ class UserViewSet(viewsets.ModelViewSet):
         user = serializer.save()
         return Response(self.get_serializer(user, context={"request": request}).data)
 
+    @action(detail=False, methods=["delete"], url_path="me/profile_picture", permission_classes=[IsAuthenticated])
+    def delete_profile_picture(self, request):
+        """
+        DELETE /api/users/me/profile_picture/
+        Removes the user's profile picture.
+        """
+        user = request.user
+        if user.profile_picture:
+            # Delete the file from storage
+            user.profile_picture.delete(save=False)
+            user.profile_picture = None
+            user.save(update_fields=["profile_picture"])
+            return Response({"detail": "Profile picture deleted successfully."}, status=status.HTTP_200_OK)
+        return Response({"detail": "No profile picture to delete."}, status=status.HTTP_200_OK)
+
     @action(
         detail=False,
         methods=["post"],
