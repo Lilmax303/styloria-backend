@@ -1420,6 +1420,25 @@ Your username is: {user.get_username()}
 
     return Response({"detail": "If that email exists, your username was sent."}, status=200)
 
+# ----------------
+# DELETE PROFILE PICTURE
+# ----------------
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_profile_picture(request):
+    """
+    DELETE /api/users/me/profile_picture/
+    Removes the user's profile picture.
+    """
+    user = request.user
+    if user.profile_picture:
+        # Delete the file from storage
+        user.profile_picture.delete(save=False)
+        user.profile_picture = None
+        user.save(update_fields=["profile_picture"])
+        return Response({"detail": "Profile picture deleted successfully."}, status=status.HTTP_200_OK)
+    return Response({"detail": "No profile picture to delete."}, status=status.HTTP_200_OK)
+
 
 # ----------------
 # USER VIEWSET
