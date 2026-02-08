@@ -8,7 +8,8 @@ from decimal import Decimal
 import re
 import random
 import string
-import os 
+import os
+import uuid  # ✅ ADD THIS LINE 
 
 from django.db import models, transaction
 from django.db.models import Max
@@ -533,89 +534,6 @@ class CustomUser(AbstractUser):
             self.referral_code = self.generate_referral_code()
 
         return super().save(*args, **kwargs)
-
-
-class Referral(models.Model):
-    """
-    Tracks referral relationships between users.
-    A referral becomes 'qualified' when the referred user completes their first paid booking.
-    """
-    STATUS_CHOICES = (
-        ('pending', 'Pending'),      # User signed up but hasn't paid for a booking yet
-        ('qualified', 'Qualified'),  # User completed first paid booking
-        ('expired', 'Expired'),      # Referral expired (optional: after X days)
-    )
-    
-    referrer = models.ForeignKey(
-        CustomUser,
-        on_delete=models.CASCADE,
-        related_name='referrals_given',
-        help_text="User who shared their referral code"
-    )
-    referred_user = models.ForeignKey(
-        CustomUser,
-        on_delete=models.CASCADE,
-        related_name='referral_received',
-        help_text="User who signed up using the referral code"
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    status = models.CharField(
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default='pending'
-    )
-    credits_awarded = models.BooleanField(
-        default=False,
-        help_text="Whether credits have been awarded to referrer"
-    )
-    credits_amount = models.PositiveIntegerField(
-        default=5,
-        help_text="Number of credits to award when qualified"
-    )
-    qualified_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="When the referred user completed their first paid booking"
-    )
-    qualifying_booking = models.ForeignKey(
-        'ServiceRequest',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        help_text="The booking that qualified this referral"
-    )
-    
-    class Meta:
-        unique_together = ['referrer', 'referred_user']
-        ordering = ['-created_at']
-    
-    def __str__(self):
-        return f"{self.referrer.username} → {self.referred_user.username} ({self.status})"
-    
-    def award_credits(self, qualifying_booking=None):
-        """Award referral credits to the referrer."""
-        if self.credits_awarded:
-            return False
-        
-        from django.utils import timezone
-        
-        self.status = 'qualified'
-        self.credits_awarded = True
-        self.qualified_at = timezone.now()
-        self.qualifying_booking = qualifying_booking
-        self.save()
-        
-        # Award credits to referrer
-        self.referrer.referral_credits += self.credits_amount
-        self.referrer.total_referrals += 1
-        self.referrer.total_referral_credits_earned += self.credits_amount
-        self.referrer.save(update_fields=[
-            'referral_credits',
-            'total_referrals', 
-            'total_referral_credits_earned'
-        ])
-        
-        return True
 
 
 class ServiceProvider(models.Model):
@@ -1315,6 +1233,105 @@ class ServiceRequest(models.Model):
         seven_minutes = timedelta(minutes=7)
         deadline = self.accepted_at + seven_minutes
         return timezone.now() <= deadline
+
+
+class Referral(models.Model):
+    """
+    Tracks referral relationships and credit awards.
+    Created when a new user signs up with a referral code.
+    Credits are awarded when the referred user completes their first paid booking.
+    """
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),      # Signed up, waiting for first booking
+        ('qualified', 'Qualified'),  # First booking completed, credits awarded
+        ('expired', 'Expired'),      # Never completed first booking (optional)
+    ]
+    
+    referrer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='referrals_given',
+        help_text='User who shared the referral code'
+    )
+    referred_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='referral_received',
+        help_text='User who signed up using the code'
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending'
+    )
+    credits_amount = models.PositiveSmallIntegerField(
+        default=5,
+        help_text='Number of discount credits awarded (5 per referral)'
+    )
+    credits_awarded = models.BooleanField(
+        default=False,
+        help_text='Whether credits have been awarded to referrer'
+    )
+    qualifying_booking = models.ForeignKey(
+        'ServiceRequest',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='qualifying_for_referral',
+        help_text='The first paid booking that qualified this referral'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    qualified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When the referred user completed their first booking'
+    )
+    
+    class Meta:
+        ordering = ['-created_at']
+        unique_together = [['referrer', 'referred_user']]
+        indexes = [
+            models.Index(fields=['referrer', 'status']),
+            models.Index(fields=['referred_user']),
+            models.Index(fields=['status', 'credits_awarded']),
+        ]
+    
+    def __str__(self):
+        return f"{self.referrer.username} → {self.referred_user.username} ({self.status})"
+    
+    def award_credits(self, qualifying_booking=None):
+        """
+        Award credits to the referrer.
+        Called when referred user completes their first paid booking.
+        """
+        if self.credits_awarded:
+            return False  # Already awarded
+        
+        from django.utils import timezone
+        
+        # Award credits to referrer
+        self.referrer.referral_credits += self.credits_amount
+        self.referrer.total_referrals += 1
+        self.referrer.total_referral_credits_earned += self.credits_amount
+        self.referrer.save(update_fields=[
+            'referral_credits',
+            'total_referrals', 
+            'total_referral_credits_earned'
+        ])
+        
+        # Mark referral as qualified
+        self.status = 'qualified'
+        self.credits_awarded = True
+        self.qualified_at = timezone.now()
+        self.qualifying_booking = qualifying_booking
+        self.save(update_fields=[
+            'status',
+            'credits_awarded',
+            'qualified_at',
+            'qualifying_booking'
+        ])
+        
+        return True
 
 
 class ServiceProviderPricing(models.Model):

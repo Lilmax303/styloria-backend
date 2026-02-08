@@ -262,11 +262,6 @@ class UserSerializer(serializers.ModelSerializer):
         if hasattr(user, "email_verified"):
             user.email_verified = False
 
-        # Handle referral code
-        referred_by_code = validated_data.pop("referred_by_code", None)
-        if referred_by_code:
-            referred_by_code = referred_by_code.strip().upper()
-
         user.save()
 
         # Process referral if code was provided

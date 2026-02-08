@@ -122,6 +122,7 @@ ASGI_APPLICATION = 'styloria_project.asgi.application'
 # DATABASE
 # =============================================================================
 DATABASE_URL = os.environ.get('DATABASE_URL')
+USE_REMOTE_DB = os.environ.get('USE_REMOTE_DB', 'False').lower() == 'true'
  
 if DATABASE_URL:
     # Production: Railway provides DATABASE_URL automatically
