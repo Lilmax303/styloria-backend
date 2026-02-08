@@ -26,7 +26,7 @@ from .models import (
     ProviderWallet,
     WalletLedgerEntry,
     Payout,
-    ProviderPayoutSettings
+    ProviderPayoutSettings,
     Referral,
     
 )
