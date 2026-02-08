@@ -112,6 +112,7 @@ from .models import (
     ProviderPortfolioMedia,
     ProviderPortfolioPost,
     Review,
+    Referral,
     ServiceProvider,
     ProviderCertification,
     RequesterReview,
