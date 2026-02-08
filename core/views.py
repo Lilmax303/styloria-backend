@@ -1621,7 +1621,7 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         """
-        Signup + automatically email a verification code.
+        Signup + handle referral code + email verification
         """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1638,6 +1638,46 @@ class UserViewSet(viewsets.ModelViewSet):
                 },
             )
 
+        # ========== HANDLE REFERRAL CODE ==========
+        referral_code = (request.data.get('referral_code') or '').strip().upper()
+    
+        if referral_code:
+            try:
+                # Find referrer by code
+                referrer = CustomUser.objects.get(referral_code__iexact=referral_code)
+             
+                # Prevent self-referral
+                if referrer.id != user.id:
+                    # Link new user to referrer
+                    user.referred_by = referrer
+                    user.save(update_fields=['referred_by'])
+                
+                    # Create pending Referral record
+                    # Credits will be awarded when user completes first booking
+                    Referral.objects.create(
+                        referrer=referrer,
+                        referred_user=user,
+                        status='pending',
+                        credits_amount=5,
+                        credits_awarded=False,
+                    )
+                
+                    # Notify referrer
+                    try:
+                        send_websocket_notification(
+                            referrer,
+                            f"🎉 {user.first_name or user.username} just signed up using your referral code! "
+                            f"You'll earn 5 discount credits when they complete their first booking.",
+                            notification_type="referral_signup"
+                        )
+                    except Exception:
+                        pass  # Don't block registration if notification fails
+                    
+            except CustomUser.DoesNotExist:
+                # Invalid code - ignore (don't block registration)
+                pass
+
+        # ========== EMAIL VERIFICATION ==========
         # If no email, we can't send verification
         if not user.email:
             headers = self.get_success_headers(serializer.data)
@@ -1654,8 +1694,10 @@ class UserViewSet(viewsets.ModelViewSet):
             data["verification_detail"] = "Email already verified."
             return Response(data, status=status.HTTP_201_CREATED, headers=headers)
 
+        # Invalidate old codes
         EmailVerificationCode.objects.filter(user=user, used=False).update(used=True)
 
+        # Generate new code
         code = _generate_6_digit_code()
         EmailVerificationCode.objects.create(
             user=user,
@@ -1664,6 +1706,7 @@ class UserViewSet(viewsets.ModelViewSet):
             used=False,
         )
 
+        # Send email
         from core.utils.ms_graph_mail import send_email_with_fallback
         
         try:

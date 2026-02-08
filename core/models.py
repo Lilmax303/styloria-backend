@@ -295,40 +295,56 @@ class CustomUser(AbstractUser):
         help_text="Number of reviews received from providers"
     )
 
-    # ═══════════════════════════════════════════════════════════════════
-    # REFERRAL SYSTEM
-    # ═══════════════════════════════════════════════════════════════════
+    # ========== REFERRAL SYSTEM FIELDS ==========
     referral_code = models.CharField(
-        max_length=12,
+        max_length=50,
         unique=True,
-        blank=True,
+        db_index=True,
         null=True,
-        help_text="Unique referral code for this user"
+        blank=True,
+        help_text='Unique referral code (format: STYLORIA-username)'
     )
     referred_by = models.ForeignKey(
         'self',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='referrals_made',
-        help_text="User who referred this user"
+        related_name='direct_referrals',
+        help_text='User who referred this user during signup'
     )
     referral_credits = models.PositiveIntegerField(
         default=0,
-        help_text="Number of discounted bookings remaining from referrals"
+        help_text='Available discount credits (7% off per credit)'
     )
     total_referrals = models.PositiveIntegerField(
         default=0,
-        help_text="Total number of successful referrals"
+        help_text='Total number of successful referrals'
     )
     total_referral_credits_earned = models.PositiveIntegerField(
         default=0,
-        help_text="Total credits earned from referrals"
+        help_text='Lifetime credits earned from referrals'
     )
     total_referral_credits_used = models.PositiveIntegerField(
         default=0,
-        help_text="Total credits used for discounts"
+        help_text='Lifetime credits used on bookings'
     )
+    
+    def generate_referral_code(self):
+        """Generate unique referral code based on username."""
+        import random
+        import string
+        base = f"STYLORIA-{self.username}".upper()
+        # If collision, add random suffix
+        if CustomUser.objects.filter(referral_code=base).exists():
+            suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+            base = f"{base}-{suffix}"
+        return base
+    
+    def save(self, *args, **kwargs):
+        # Auto-generate referral code on first save
+        if not self.referral_code and self.username:
+            self.referral_code = self.generate_referral_code()
+        super().save(*args, **kwargs)
 
 
     def __str__(self):
@@ -444,27 +460,6 @@ class CustomUser(AbstractUser):
             initials=initials,
         )
 
-    def generate_referral_code(self) -> str:
-        """Generate a unique referral code for this user."""
-        import random
-        import string
-        
-        # Use first 4 chars of username (uppercase) + 4 random alphanumeric
-        username_part = (self.username or 'USER')[:4].upper()
-        
-        for _ in range(10):  # Try 10 times to generate unique code
-            random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-            code = f"{username_part}{random_part}"
-            
-            if not CustomUser.objects.filter(referral_code=code).exists():
-                return code
-        
-        # Fallback: use user ID if available
-        if self.pk:
-            return f"REF{self.pk:08d}"
-        
-        # Ultimate fallback
-        return f"STY{uuid.uuid4().hex[:8].upper()}"
 
     def save(self, *args, **kwargs):
         """
@@ -529,9 +524,6 @@ class CustomUser(AbstractUser):
                 self._assign_membership_and_styloria_id()
                 return super().save(*args, **kwargs)
 
-        # Generate referral code if not set
-        if not self.referral_code:
-            self.referral_code = self.generate_referral_code()
 
         return super().save(*args, **kwargs)
 
