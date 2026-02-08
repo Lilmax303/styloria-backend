@@ -294,6 +294,42 @@ class CustomUser(AbstractUser):
         help_text="Number of reviews received from providers"
     )
 
+    # ═══════════════════════════════════════════════════════════════════
+    # REFERRAL SYSTEM
+    # ═══════════════════════════════════════════════════════════════════
+    referral_code = models.CharField(
+        max_length=12,
+        unique=True,
+        blank=True,
+        null=True,
+        help_text="Unique referral code for this user"
+    )
+    referred_by = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='referrals_made',
+        help_text="User who referred this user"
+    )
+    referral_credits = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of discounted bookings remaining from referrals"
+    )
+    total_referrals = models.PositiveIntegerField(
+        default=0,
+        help_text="Total number of successful referrals"
+    )
+    total_referral_credits_earned = models.PositiveIntegerField(
+        default=0,
+        help_text="Total credits earned from referrals"
+    )
+    total_referral_credits_used = models.PositiveIntegerField(
+        default=0,
+        help_text="Total credits used for discounts"
+    )
+
+
     def __str__(self):
         return self.username
 
@@ -407,6 +443,28 @@ class CustomUser(AbstractUser):
             initials=initials,
         )
 
+    def generate_referral_code(self) -> str:
+        """Generate a unique referral code for this user."""
+        import random
+        import string
+        
+        # Use first 4 chars of username (uppercase) + 4 random alphanumeric
+        username_part = (self.username or 'USER')[:4].upper()
+        
+        for _ in range(10):  # Try 10 times to generate unique code
+            random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+            code = f"{username_part}{random_part}"
+            
+            if not CustomUser.objects.filter(referral_code=code).exists():
+                return code
+        
+        # Fallback: use user ID if available
+        if self.pk:
+            return f"REF{self.pk:08d}"
+        
+        # Ultimate fallback
+        return f"STY{uuid.uuid4().hex[:8].upper()}"
+
     def save(self, *args, **kwargs):
         """
         Combined save logic (IMPORTANT):
@@ -470,7 +528,94 @@ class CustomUser(AbstractUser):
                 self._assign_membership_and_styloria_id()
                 return super().save(*args, **kwargs)
 
+        # Generate referral code if not set
+        if not self.referral_code:
+            self.referral_code = self.generate_referral_code()
+
         return super().save(*args, **kwargs)
+
+
+class Referral(models.Model):
+    """
+    Tracks referral relationships between users.
+    A referral becomes 'qualified' when the referred user completes their first paid booking.
+    """
+    STATUS_CHOICES = (
+        ('pending', 'Pending'),      # User signed up but hasn't paid for a booking yet
+        ('qualified', 'Qualified'),  # User completed first paid booking
+        ('expired', 'Expired'),      # Referral expired (optional: after X days)
+    )
+    
+    referrer = models.ForeignKey(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name='referrals_given',
+        help_text="User who shared their referral code"
+    )
+    referred_user = models.ForeignKey(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name='referral_received',
+        help_text="User who signed up using the referral code"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending'
+    )
+    credits_awarded = models.BooleanField(
+        default=False,
+        help_text="Whether credits have been awarded to referrer"
+    )
+    credits_amount = models.PositiveIntegerField(
+        default=5,
+        help_text="Number of credits to award when qualified"
+    )
+    qualified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the referred user completed their first paid booking"
+    )
+    qualifying_booking = models.ForeignKey(
+        'ServiceRequest',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="The booking that qualified this referral"
+    )
+    
+    class Meta:
+        unique_together = ['referrer', 'referred_user']
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.referrer.username} → {self.referred_user.username} ({self.status})"
+    
+    def award_credits(self, qualifying_booking=None):
+        """Award referral credits to the referrer."""
+        if self.credits_awarded:
+            return False
+        
+        from django.utils import timezone
+        
+        self.status = 'qualified'
+        self.credits_awarded = True
+        self.qualified_at = timezone.now()
+        self.qualifying_booking = qualifying_booking
+        self.save()
+        
+        # Award credits to referrer
+        self.referrer.referral_credits += self.credits_amount
+        self.referrer.total_referrals += 1
+        self.referrer.total_referral_credits_earned += self.credits_amount
+        self.referrer.save(update_fields=[
+            'referral_credits',
+            'total_referrals', 
+            'total_referral_credits_earned'
+        ])
+        
+        return True
 
 
 class ServiceProvider(models.Model):
@@ -1068,6 +1213,37 @@ class ServiceRequest(models.Model):
         blank=True,
         null=True,
         help_text="Paystack transaction ID for tip payment.",
+    )
+
+
+    # ═══════════════════════════════════════════════════════════════════
+    # REFERRAL DISCOUNT
+    # ═══════════════════════════════════════════════════════════════════
+    referral_discount_applied = models.BooleanField(
+        default=False,
+        help_text="Whether a referral discount was applied to this booking"
+    )
+    referral_discount_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        default=Decimal("7.00"),
+        help_text="Referral discount percentage (default 7%)"
+    )
+    referral_discount_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Actual discount amount in booking currency"
+    )
+    pre_discount_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Original price before referral discount was applied"
     )
 
 

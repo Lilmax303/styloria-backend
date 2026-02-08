@@ -62,6 +62,18 @@ class UserSerializer(serializers.ModelSerializer):
     detected_country = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
     country_mismatch = serializers.BooleanField(write_only=True, required=False, default=False)
 
+    # Referral fields
+    referral_code = serializers.CharField(read_only=True)
+    referral_credits = serializers.IntegerField(read_only=True)
+    total_referrals = serializers.IntegerField(read_only=True)
+    referred_by_code = serializers.CharField(
+        write_only=True, 
+        required=False, 
+        allow_blank=True,
+        allow_null=True,
+        help_text="Referral code used during signup"
+    )
+
     class Meta:
         model = CustomUser
         fields = [
@@ -99,6 +111,10 @@ class UserSerializer(serializers.ModelSerializer):
             "provider_verification_status",
             "detected_country",
             "country_mismatch",
+            "referral_code",
+            "referral_credits",
+            "total_referrals",
+            "referred_by_code",
         ]
         extra_kwargs = {
             "styloria_id": {"read_only": True},
@@ -237,7 +253,29 @@ class UserSerializer(serializers.ModelSerializer):
         if hasattr(user, "email_verified"):
             user.email_verified = False
 
+        # Handle referral code
+        referred_by_code = validated_data.pop("referred_by_code", None)
+        if referred_by_code:
+            referred_by_code = referred_by_code.strip().upper()
+
         user.save()
+
+        # Process referral if code was provided
+        if referred_by_code:
+            try:
+                referrer = CustomUser.objects.get(referral_code__iexact=referred_by_code)
+                if referrer.pk != user.pk:  # Can't refer yourself
+                    user.referred_by = referrer
+                    user.save(update_fields=['referred_by'])
+                    
+                    # Create referral record
+                    Referral.objects.create(
+                        referrer=referrer,
+                        referred_user=user,
+                        status='pending'
+                    )
+            except CustomUser.DoesNotExist:
+                pass  # Invalid code - silently ignore (don't block registration)
 
         # Auto-create provider profile for providers
         if (user.role or "").strip().lower() == "provider":
@@ -743,6 +781,10 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             "requester_average_rating",
             "requester_review_count",
             "auto_cancel_warning",
+            "referral_discount_applied",
+            "referral_discount_percent",
+            "referral_discount_amount",
+            "pre_discount_price",
         ]
         # Keep booking/payment truth server-controlled.
         read_only_fields = [

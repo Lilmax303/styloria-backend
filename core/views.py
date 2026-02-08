@@ -908,6 +908,149 @@ def check_provider_arrived(provider_lat, provider_lng, dest_lat, dest_lng):
     return distance_meters <= ARRIVAL_THRESHOLD_METERS, distance_meters
 
 
+# ═══════════════════════════════════════════════════════════════════
+# REFERRAL SYSTEM CONSTANTS & HELPERS
+# ═══════════════════════════════════════════════════════════════════
+
+REFERRAL_DISCOUNT_PERCENT = Decimal("7.00")  # 7% discount
+REFERRAL_CREDITS_PER_REFERRAL = 5  # 5 discounted bookings per successful referral
+
+
+def apply_referral_discount_if_eligible(service_request, user):
+    """
+    Check if user has referral credits and apply discount.
+    Returns (discounted_amount, discount_applied, discount_amount).
+    
+    IMPORTANT: The discount comes from platform fee, not provider's cut.
+    """
+    original_price = service_request.offered_price or service_request.estimated_price
+    if original_price is None or original_price <= Decimal("0"):
+        return original_price, False, Decimal("0")
+    
+    # Check if user has referral credits
+    if user.referral_credits <= 0:
+        return original_price, False, Decimal("0")
+    
+    # Calculate discount (7% of total)
+    discount_amount = (original_price * REFERRAL_DISCOUNT_PERCENT / Decimal("100")).quantize(Decimal("0.01"))
+    discounted_price = (original_price - discount_amount).quantize(Decimal("0.01"))
+    
+    # Ensure discounted price is positive
+    if discounted_price <= Decimal("0"):
+        return original_price, False, Decimal("0")
+    
+    return discounted_price, True, discount_amount
+
+
+def finalize_referral_discount(service_request, user, discount_amount, original_price):
+    """
+    Apply the referral discount to the service request and decrement user's credits.
+    Call this when payment is being created (before sending to payment gateway).
+    """
+    from django.db import transaction
+    
+    with transaction.atomic():
+        # Lock user for update
+        user_locked = CustomUser.objects.select_for_update().get(pk=user.pk)
+        
+        if user_locked.referral_credits <= 0:
+            return False
+        
+        # Decrement credits
+        user_locked.referral_credits -= 1
+        user_locked.total_referral_credits_used += 1
+        user_locked.save(update_fields=['referral_credits', 'total_referral_credits_used'])
+        
+        # Update service request
+        service_request.referral_discount_applied = True
+        service_request.referral_discount_percent = REFERRAL_DISCOUNT_PERCENT
+        service_request.referral_discount_amount = discount_amount
+        service_request.pre_discount_price = original_price
+        service_request.save(update_fields=[
+            'referral_discount_applied',
+            'referral_discount_percent', 
+            'referral_discount_amount',
+            'pre_discount_price'
+        ])
+        
+        return True
+
+
+def check_and_award_referral_credits(service_request):
+    """
+    Check if this is the user's first paid booking and award referral credits
+    to whoever referred them.
+    
+    Call this after payment is confirmed (in webhook/verify endpoints).
+    """
+    user = service_request.user
+    
+    # Check if user was referred
+    if not user.referred_by:
+        return False
+    
+    # Check if there's a pending referral record
+    try:
+        referral = Referral.objects.get(
+            referrer=user.referred_by,
+            referred_user=user,
+            status='pending',
+            credits_awarded=False
+        )
+    except Referral.DoesNotExist:
+        return False
+    
+    # Check if this is user's first PAID booking
+    first_paid_booking = ServiceRequest.objects.filter(
+        user=user,
+        payment_status='paid'
+    ).order_by('request_time').first()
+    
+    # Only award if this is the first paid booking
+    if first_paid_booking and first_paid_booking.pk == service_request.pk:
+        referral.award_credits(qualifying_booking=service_request)
+        
+        # Send notification to referrer
+        try:
+            send_websocket_notification(
+                referral.referrer,
+                f"🎉 Great news! {user.first_name or user.username} just completed their first booking. "
+                f"You've earned {referral.credits_amount} discount credits!",
+                notification_type="referral_success"
+            )
+        except Exception:
+            pass
+        
+        return True
+    
+    return False
+
+
+def _compute_split_with_referral(paid_amount, service_request):
+    """
+    Compute platform/provider split accounting for referral discount.
+    
+    KEY: Provider gets 85% of ORIGINAL price (before discount).
+    Platform absorbs the discount from their 15%.
+    """
+    if service_request.referral_discount_applied and service_request.pre_discount_price:
+        original_price = service_request.pre_discount_price
+    else:
+        original_price = paid_amount
+    
+    # Provider always gets 85% of original price
+    provider_gross = (original_price * Decimal("0.85")).quantize(Decimal("0.01"))
+    
+    # Platform gets whatever is left after provider
+    platform_fee = (paid_amount - provider_gross).quantize(Decimal("0.01"))
+    
+    # Ensure platform fee doesn't go negative
+    if platform_fee < Decimal("0"):
+        platform_fee = Decimal("0")
+    
+    return platform_fee, provider_gross
+
+
 
 # -------------------------------
 # Permissions
@@ -4999,6 +5142,27 @@ def create_payment(request):
     if amount_source <= 0:
         return Response({"error": "Amount must be positive"}, status=400)
 
+
+    # ═══════════════════════════════════════════════════════════════════
+    # REFERRAL DISCOUNT CHECK
+    # ═══════════════════════════════════════════════════════════════════
+    original_price = amount_source
+    discount_applied = False
+    discount_amount = Decimal("0")
+    
+    # Check if user wants to use referral credit (default: yes if available)
+    use_referral = request.data.get("use_referral_credit", True)
+    
+    if use_referral and request.user.referral_credits > 0:
+        discounted_price, discount_applied, discount_amount = apply_referral_discount_if_eligible(
+            service_request, request.user
+        )
+        if discount_applied:
+            amount_source = discounted_price
+            # Finalize the discount (decrement credits, update booking)
+            finalize_referral_discount(service_request, request.user, discount_amount, original_price)
+
+
     # ═══════════════════════════════════════════════════════════════════
     # CURRENCY VALIDATION & CONVERSION
     # ═══════════════════════════════════════════════════════════════════
@@ -5102,6 +5266,10 @@ def create_payment(request):
             "currency": currency,
             "amount": float(final_amount),
             "currency_converted": was_converted,
+            # Referral info
+            "referral_discount_applied": discount_applied,
+            "referral_discount_amount": float(discount_amount) if discount_applied else 0,
+            "original_price": float(original_price) if discount_applied else None,
         }
     )
 
@@ -5208,8 +5376,8 @@ def stripe_webhook(request):
         if stripe_fee_major is not None:
             sr_locked.stripe_fee_amount = stripe_fee_major
 
-        # Compute split from total paid
-        platform_fee, provider_gross = _compute_split(paid_amount)
+        # Compute split (accounting for referral discount)
+        platform_fee, provider_gross = _compute_split_with_referral(paid_amount, sr_locked)
         sr_locked.platform_fee_amount = platform_fee
         sr_locked.provider_earnings_amount = provider_gross
 
@@ -5229,6 +5397,9 @@ def stripe_webhook(request):
             "provider_earnings_amount",
             "provider_net_amount",
         ])
+
+    # Check and award referral credits if this is user's first paid booking
+    check_and_award_referral_credits(sr_locked)
 
     # Notify eligible providers of the new job
     try:
@@ -5506,6 +5677,24 @@ def create_flutterwave_checkout(request):
     if amount <= 0:
         return Response({"detail": "amount must be positive."}, status=400)
 
+    # ═══════════════════════════════════════════════════════════════════
+    # REFERRAL DISCOUNT CHECK
+    # ═══════════════════════════════════════════════════════════════════
+    original_price = amount_source
+    discount_applied = False
+    discount_amount = Decimal("0")
+    
+    use_referral = request.data.get("use_referral_credit", True)
+
+    if use_referral and request.user.referral_credits > 0:
+        discount_amount = (amount * REFERRAL_DISCOUNT_PERCENT / Decimal("100")).quantize(Decimal("0.01"))
+        discounted_price = (amount - discount_amount).quantize(Decimal("0.01"))
+        
+        if discounted_price > Decimal("0"):
+            discount_applied = True
+            amount = discounted_price
+            finalize_referral_discount(sr, request.user, discount_amount, original_price)
+
     # Persist the amount user intends to pay
     sr.offered_price = amount
     sr.payment_gateway = "flutterwave"
@@ -5539,6 +5728,10 @@ def create_flutterwave_checkout(request):
             "customer_phone": request.user.phone_number or "",
             "customer_name": full_name,
             "redirect_url": settings.FLUTTERWAVE_REDIRECT_URL,
+            # Referral info
+            "referral_discount_applied": discount_applied,
+            "referral_discount_amount": float(discount_amount) if discount_applied else 0,
+            "original_price": float(original_price) if discount_applied else None,
         },
         status=200,
     )
@@ -5667,7 +5860,7 @@ def verify_flutterwave_payment(request):
             if sr_locked.status == "pending":
                 sr_locked.status = "open"
 
-            platform_fee, provider_gross = _compute_split(fw_amount)
+            platform_fee, provider_gross = _compute_split_with_referral(fw_amount, sr_locked)
             sr_locked.platform_fee_amount = platform_fee
             sr_locked.provider_earnings_amount = provider_gross
             # Flutterwave fee not computed here; provider net = gross for now
@@ -5684,6 +5877,9 @@ def verify_flutterwave_payment(request):
                 "provider_earnings_amount",
                 "provider_net_amount",
             ])
+
+    # Check and award referral credits
+    check_and_award_referral_credits(sr_locked)
 
     sr_refresh = ServiceRequest.objects.get(pk=sr.pk)
 
@@ -5772,7 +5968,7 @@ def verify_flutterwave_by_txref(request):
             if sr_locked.status == "pending":
                 sr_locked.status = "open"
             
-            platform_fee, provider_gross = _compute_split(fw_amount)
+            platform_fee, provider_gross = _compute_split_with_referral(fw_amount, sr_locked)
             sr_locked.platform_fee_amount = platform_fee
             sr_locked.provider_earnings_amount = provider_gross
             sr_locked.provider_net_amount = provider_gross
@@ -5782,6 +5978,9 @@ def verify_flutterwave_by_txref(request):
                 "payment_gateway", "flutterwave_transaction_id",
                 "platform_fee_amount", "provider_earnings_amount", "provider_net_amount",
             ])
+
+    # Check and award referral credits
+    check_and_award_referral_credits(sr_locked)
     
     sr.refresh_from_db()
 
@@ -5910,6 +6109,24 @@ def create_paystack_checkout(request):
     if amount <= 0:
         return Response({"detail": "amount must be positive."}, status=400)
 
+    # ═══════════════════════════════════════════════════════════════════
+    # REFERRAL DISCOUNT CHECK
+    # ═══════════════════════════════════════════════════════════════════
+    original_price = amount
+    discount_applied = False
+    discount_amount = Decimal("0")
+    
+    use_referral = request.data.get("use_referral_credit", True)
+
+    if use_referral and request.user.referral_credits > 0:
+        discount_amount = (amount * REFERRAL_DISCOUNT_PERCENT / Decimal("100")).quantize(Decimal("0.01"))
+        discounted_price = (amount - discount_amount).quantize(Decimal("0.01"))
+        
+        if discounted_price > Decimal("0"):
+            discount_applied = True
+            amount = discounted_price
+            finalize_referral_discount(sr, request.user, discount_amount, original_price)
+
     # Get currency for user's country
     currency_u = get_paystack_currency(user_country) or get_currency_for_country(user_country)
     currency_u = currency_u.upper().strip()
@@ -5961,6 +6178,10 @@ def create_paystack_checkout(request):
         "currency": currency_u,
         "amount": float(amount),
         "public_key": getattr(settings, "PAYSTACK_PUBLIC_KEY", ""),
+        # Referral info
+        "referral_discount_applied": discount_applied,
+        "referral_discount_amount": float(discount_amount) if discount_applied else 0,
+        "original_price": float(original_price) if discount_applied else None,
     }, status=200)
 
 
@@ -6048,7 +6269,7 @@ def verify_paystack_payment(request):
                 sr_locked.status = "open"
             
             # Compute fee split
-            platform_fee, provider_gross = _compute_split(verified_amount)
+            platform_fee, provider_gross = _compute_split_with_referral(verified_amount, sr_locked)
             sr_locked.platform_fee_amount = platform_fee
             sr_locked.provider_earnings_amount = provider_gross
             sr_locked.provider_net_amount = provider_gross  # Paystack fee is separate
@@ -6066,6 +6287,9 @@ def verify_paystack_payment(request):
                 "provider_earnings_amount",
                 "provider_net_amount",
             ])
+
+    # Check and award referral credits
+    check_and_award_referral_credits(sr_locked)
     
     sr.refresh_from_db()
 
@@ -6261,6 +6485,154 @@ def reset_paystack_payment(request):
     sr.save(update_fields=["payment_status", "paystack_reference", "paystack_access_code"])
 
     return Response({"detail": "Payment reset. You can try again."}, status=200)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# REFERRAL SYSTEM ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_referral_stats(request):
+    """
+    Get the current user's referral stats and code.
+    
+    GET /api/referral/stats/
+    
+    Returns:
+    {
+        "referral_code": "JOHN1X2K",
+        "referral_credits": 10,
+        "total_referrals": 2,
+        "total_credits_earned": 10,
+        "total_credits_used": 0,
+        "discount_percent": 7,
+        "credits_per_referral": 5,
+        "pending_referrals": 1,
+        "referrals": [...]
+    }
+    """
+    user = request.user
+    
+    # Ensure user has a referral code
+    if not user.referral_code:
+        user.referral_code = user.generate_referral_code()
+        user.save(update_fields=['referral_code'])
+    
+    # Get referral records
+    referrals = Referral.objects.filter(referrer=user).select_related('referred_user')
+    
+    referral_list = []
+    for ref in referrals[:20]:  # Limit to 20 most recent
+        referral_list.append({
+            "referred_username": ref.referred_user.username,
+            "referred_first_name": ref.referred_user.first_name,
+            "status": ref.status,
+            "created_at": ref.created_at.isoformat(),
+            "qualified_at": ref.qualified_at.isoformat() if ref.qualified_at else None,
+            "credits_awarded": ref.credits_awarded,
+        })
+    
+    pending_count = referrals.filter(status='pending').count()
+    
+    return Response({
+        "referral_code": user.referral_code,
+        "referral_credits": user.referral_credits,
+        "total_referrals": user.total_referrals,
+        "total_credits_earned": user.total_referral_credits_earned,
+        "total_credits_used": user.total_referral_credits_used,
+        "discount_percent": float(REFERRAL_DISCOUNT_PERCENT),
+        "credits_per_referral": REFERRAL_CREDITS_PER_REFERRAL,
+        "pending_referrals": pending_count,
+        "referrals": referral_list,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def validate_referral_code(request):
+    """
+    Validate a referral code before registration.
+    
+    POST /api/referral/validate/
+    Body: { "code": "JOHN1X2K" }
+    
+    Returns:
+    {
+        "valid": true,
+        "referrer_first_name": "John"
+    }
+    """
+    code = (request.data.get("code") or "").strip().upper()
+    
+    if not code:
+        return Response({"valid": False, "detail": "Code is required."}, status=400)
+    
+    try:
+        referrer = CustomUser.objects.get(referral_code__iexact=code)
+        return Response({
+            "valid": True,
+            "referrer_first_name": referrer.first_name or referrer.username,
+        })
+    except CustomUser.DoesNotExist:
+        return Response({
+            "valid": False,
+            "detail": "Invalid referral code."
+        })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_referral_discount_preview(request, service_request_id):
+    """
+    Preview the referral discount for a booking before payment.
+    
+    GET /api/referral/discount_preview/<service_request_id>/
+    
+    Returns:
+    {
+        "eligible": true,
+        "original_price": 100.00,
+        "discount_percent": 7,
+        "discount_amount": 7.00,
+        "final_price": 93.00,
+        "credits_remaining": 4
+    }
+    """
+    try:
+        sr = ServiceRequest.objects.get(id=service_request_id, user=request.user)
+    except ServiceRequest.DoesNotExist:
+        return Response({"detail": "Booking not found."}, status=404)
+    
+    if sr.payment_status == "paid":
+        return Response({"detail": "Booking already paid."}, status=400)
+    
+    original_price = sr.offered_price or sr.estimated_price or Decimal("0")
+    user = request.user
+    
+    if user.referral_credits <= 0:
+        return Response({
+            "eligible": False,
+            "original_price": float(original_price),
+            "discount_percent": 0,
+            "discount_amount": 0,
+            "final_price": float(original_price),
+            "credits_remaining": 0,
+            "message": "No referral credits available."
+        })
+    
+    discount_amount = (original_price * REFERRAL_DISCOUNT_PERCENT / Decimal("100")).quantize(Decimal("0.01"))
+    final_price = (original_price - discount_amount).quantize(Decimal("0.01"))
+    
+    return Response({
+        "eligible": True,
+        "original_price": float(original_price),
+        "discount_percent": float(REFERRAL_DISCOUNT_PERCENT),
+        "discount_amount": float(discount_amount),
+        "final_price": float(final_price),
+        "credits_remaining": user.referral_credits,
+        "credits_after_use": user.referral_credits - 1,
+    })
 
 
 @csrf_exempt

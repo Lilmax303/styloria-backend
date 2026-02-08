@@ -9,7 +9,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from django.conf import settings
 from django.conf.urls.static import static
 
-
+from core import views
 from core import views as core_views
 from core.views import RequesterReviewViewSet
 from core.auth_views import EmailOrUsernameTokenObtainPairView
@@ -69,6 +69,11 @@ urlpatterns = [
     # MFA endpoints
     # path('api/mfa/start/', core_views.mfa_start, name='mfa_start'),
     # path('api/mfa/verify/', core_views.mfa_verify, name='mfa_verify'),
+
+    # Referral System
+    path('api/referral/stats/', views.get_referral_stats, name='referral_stats'),
+    path('api/referral/validate/', views.validate_referral_code, name='validate_referral_code'),
+    path('api/referral/discount_preview/<int:service_request_id>/', views.get_referral_discount_preview, name='referral_discount_preview'),
 
     # Stripe
     path('api/create_payment/', core_views.create_payment, name='create_payment'),
