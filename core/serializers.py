@@ -27,6 +27,7 @@ from .models import (
     WalletLedgerEntry,
     Payout,
     ProviderPayoutSettings
+    Referral,
     
 )
 
@@ -228,6 +229,14 @@ class UserSerializer(serializers.ModelSerializer):
         validated_data.pop("password_confirm", None)
         detected_country = validated_data.pop("detected_country", None)
         country_mismatch = validated_data.pop("country_mismatch", False)
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ADD THIS LINE HERE - Pop referral code BEFORE creating user
+        # ═══════════════════════════════════════════════════════════════════
+        referred_by_code = validated_data.pop("referred_by_code", None)
+        if referred_by_code:
+            referred_by_code = referred_by_code.strip().upper()
+        # ═══════════════════════════════════════════════════════════════════
 
         self._validate_password(password)
 
