@@ -927,6 +927,14 @@ def apply_referral_discount_if_eligible(service_request, user):
     original_price = service_request.offered_price or service_request.estimated_price
     if original_price is None or original_price <= Decimal("0"):
         return original_price, False, Decimal("0")
+
+    # IMPORTANT: Check if discount was already applied to this booking
+    # This prevents multiple deductions on payment retry
+    if service_request.referral_discount_applied:
+        # Return the already-discounted price without deducting again
+        discounted_price = service_request.offered_price or original_price
+        discount_amount = service_request.referral_discount_amount or Decimal("0")
+        return discounted_price, True, discount_amount
     
     # Check if user has referral credits
     if user.referral_credits <= 0:
@@ -947,14 +955,28 @@ def finalize_referral_discount(service_request, user, discount_amount, original_
     """
     Apply the referral discount to the service request and decrement user's credits.
     Call this when payment is being created (before sending to payment gateway).
+
+    IMPORTANT: This function is idempotent - it won't deduct credits twice
+    for the same booking.
     """
     from django.db import transaction
+
+    # IDEMPOTENT CHECK: If discount already applied to this booking, don't deduct again
+    if service_request.referral_discount_applied:
+        return False
     
     with transaction.atomic():
         # Lock user for update
         user_locked = CustomUser.objects.select_for_update().get(pk=user.pk)
         
         if user_locked.referral_credits <= 0:
+            return False
+
+        # Lock service request too to prevent race conditions
+        sr_locked = ServiceRequest.objects.select_for_update().get(pk=service_request.pk)
+        
+        # Double-check inside transaction (race condition protection)
+        if sr_locked.referral_discount_applied:
             return False
         
         # Decrement credits
@@ -963,16 +985,19 @@ def finalize_referral_discount(service_request, user, discount_amount, original_
         user_locked.save(update_fields=['referral_credits', 'total_referral_credits_used'])
         
         # Update service request
-        service_request.referral_discount_applied = True
-        service_request.referral_discount_percent = REFERRAL_DISCOUNT_PERCENT
-        service_request.referral_discount_amount = discount_amount
-        service_request.pre_discount_price = original_price
-        service_request.save(update_fields=[
+        sr_locked.referral_discount_applied = True
+        sr_locked.referral_discount_percent = REFERRAL_DISCOUNT_PERCENT
+        sr_locked.referral_discount_amount = discount_amount
+        sr_locked.pre_discount_price = original_price
+        sr_locked.save(update_fields=[
             'referral_discount_applied',
             'referral_discount_percent', 
             'referral_discount_amount',
             'pre_discount_price'
         ])
+
+        # Refresh the original object to reflect changes
+        service_request.refresh_from_db()
         
         return True
 
@@ -3236,6 +3261,7 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
         penalty_message = ""
         refund_amount = Decimal("0.00")
         refund_result = None
+        credit_refunded = False  # Initialize early
 
         if actor == "user":
             # Determine if booking was paid
@@ -3370,6 +3396,9 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
                 notification_type="booking_cancelled",
             )
 
+        # ✅ Refund referral credit if applicable (BEFORE building response)
+        credit_refunded = service_request.refund_referral_credit_if_applicable()
+
         # Refresh from DB to get updated fields
         service_request.refresh_from_db()
         serializer = self.get_serializer(service_request, context={"request": request})
@@ -3377,7 +3406,8 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
         response_data = {
             "detail": f"Booking cancelled successfully.{penalty_message}",
             "booking": serializer.data,
-            "credit_refunded": credit_refunded,  # ✅ NEW (optional)
+            "credit_refunded": credit_refunded,
+            "refund_status": service_request.refund_status,
         }
 
         if refund_result:
@@ -3388,25 +3418,6 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
             }
             if not refund_result.get("success"):
                 response_data["refund"]["error"] = refund_result.get("error", "Unknown error")
-
-        # ✅ NEW: Refund referral credit if applicable
-        credit_refunded = service_request.refund_referral_credit_if_applicable()
-    
-        service_request.save()
-    
-        # Optional: Notify user about credit refund
-        if credit_refunded:
-            Notification.objects.create(
-                user=service_request.user,
-                message=f"Your referral credit has been refunded for cancelled booking #{service_request.id}."
-            )
-    
-        return Response({
-            "detail": "Booking cancelled successfully",
-            "refund_status": service_request.refund_status,
-            "credit_refunded": credit_refunded,
-            "booking": ServiceRequestSerializer(service_request).data
-        })
 
         return Response(response_data)
 
@@ -5744,7 +5755,7 @@ def create_flutterwave_checkout(request):
     # ═══════════════════════════════════════════════════════════════════
     # REFERRAL DISCOUNT CHECK
     # ═══════════════════════════════════════════════════════════════════
-    original_price = amount_source
+    original_price = amount
     discount_applied = False
     discount_amount = Decimal("0")
     

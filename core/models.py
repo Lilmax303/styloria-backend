@@ -1198,9 +1198,9 @@ class ServiceRequest(models.Model):
             # Increment user's available credits
             user_locked.referral_credits += 1
     
-            # Decrement total used (rollback the "used" stat)
-            if user.total_referral_credits_used > 0:
-                user.total_referral_credits_used -= 1
+            # Decrement total used (rollback the "used" stat) - FIX: use user_locked
+            if user_locked.total_referral_credits_used > 0:
+                user_locked.total_referral_credits_used -= 1
     
             user_locked.save(update_fields=[
                 'referral_credits',
@@ -1211,9 +1211,11 @@ class ServiceRequest(models.Model):
             self.referral_credit_refunded = True
             self.save(update_fields=['referral_credit_refunded'])
 
-            # Optional: Send notification to user
+        # Optional: Send notification to user (outside transaction)
         try:
-            from .models import Notification
+            from core.models import Notification
+            # Refresh user to get updated credit count
+            self.user.refresh_from_db()
             Notification.objects.create(
                 user=self.user,
                 message=f"Your referral credit has been refunded for cancelled booking #{self.id}. You now have {self.user.referral_credits} credits available."
