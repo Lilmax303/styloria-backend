@@ -789,6 +789,7 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             "referral_discount_percent",
             "referral_discount_amount",
             "pre_discount_price",
+            "referral_credit_refunded",
         ]
         # Keep booking/payment truth server-controlled.
         read_only_fields = [
@@ -836,6 +837,7 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             "stripe_refund_id",
             "flutterwave_refund_id",
             "provider_cancellation_fee",
+            "referral_credit_refunded",
         ]
 
     def get_auto_cancel_warning(self, obj):

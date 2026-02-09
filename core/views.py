@@ -3354,7 +3354,7 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
             service_request.penalty_applied = False
             service_request.penalty_amount = None
             penalty_message = " - Request returned to open pool for other providers"
-
+        
         service_request.save()
 
         if actor == "user" and service_request.service_provider:
@@ -3377,6 +3377,7 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
         response_data = {
             "detail": f"Booking cancelled successfully.{penalty_message}",
             "booking": serializer.data,
+            "credit_refunded": credit_refunded,  # ✅ NEW (optional)
         }
 
         if refund_result:
@@ -3387,6 +3388,25 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
             }
             if not refund_result.get("success"):
                 response_data["refund"]["error"] = refund_result.get("error", "Unknown error")
+
+        # ✅ NEW: Refund referral credit if applicable
+        credit_refunded = service_request.refund_referral_credit_if_applicable()
+    
+        service_request.save()
+    
+        # Optional: Notify user about credit refund
+        if credit_refunded:
+            Notification.objects.create(
+                user=service_request.user,
+                message=f"Your referral credit has been refunded for cancelled booking #{service_request.id}."
+            )
+    
+        return Response({
+            "detail": "Booking cancelled successfully",
+            "refund_status": service_request.refund_status,
+            "credit_refunded": credit_refunded,
+            "booking": ServiceRequestSerializer(service_request).data
+        })
 
         return Response(response_data)
 

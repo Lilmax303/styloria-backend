@@ -1156,6 +1156,74 @@ class ServiceRequest(models.Model):
         help_text="Original price before referral discount was applied"
     )
 
+    # NEW FIELD: Track if credit was refunded
+    referral_credit_refunded = models.BooleanField(
+        default=False,
+        help_text="Whether the referral credit was refunded after cancellation"
+    )
+
+    def refund_referral_credit_if_applicable(self):
+        """
+        Refund referral credit if booking was cancelled/refunded.
+    
+        Business Rules:
+        - Only refund if discount was actually applied
+        - Only refund if booking is cancelled
+        - Only refund once (idempotent)
+        - Track refund to prevent double-refund
+    
+        Returns:
+            bool: True if credit was refunded, False otherwise
+        """
+        from django.db import transaction
+        from django.utils import timezone
+
+        # Check if discount was applied
+        if not self.referral_discount_applied:
+            return False
+    
+        # Check if booking is cancelled/refunded
+        if self.status != 'cancelled':
+            return False
+    
+        # Check if credit already refunded (idempotent)
+        if self.referral_credit_refunded:
+            return False
+    
+        # Refund the credit atomically
+        with transaction.atomic():
+            # Lock user for update
+            user_locked = CustomUser.objects.select_for_update().get(pk=self.user.pk)
+    
+            # Increment user's available credits
+            user_locked.referral_credits += 1
+    
+            # Decrement total used (rollback the "used" stat)
+            if user.total_referral_credits_used > 0:
+                user.total_referral_credits_used -= 1
+    
+            user_locked.save(update_fields=[
+                'referral_credits',
+                'total_referral_credits_used'
+            ])
+    
+            # Mark as refunded (prevent double-refund)
+            self.referral_credit_refunded = True
+            self.save(update_fields=['referral_credit_refunded'])
+
+            # Optional: Send notification to user
+        try:
+            from .models import Notification
+            Notification.objects.create(
+                user=self.user,
+                message=f"Your referral credit has been refunded for cancelled booking #{self.id}. You now have {self.user.referral_credits} credits available."
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to send credit refund notification: {e}")
+    
+        return True
+
 
     def __str__(self):
         provider_name = (
