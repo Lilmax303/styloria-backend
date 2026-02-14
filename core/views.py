@@ -117,6 +117,8 @@ from .models import (
     ProviderCertification,
     RequesterReview,
     ServiceProviderPricing,
+    SERVICE_TYPE_CHOICES,
+    CERTIFICATION_REQUIRED_SERVICES,
     ServiceRequest,
     SupportMessage,
     SupportThread,
