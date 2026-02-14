@@ -28,7 +28,7 @@ from .models import (
     Payout,
     ProviderPayoutSettings,
     Referral,
-    
+    SERVICE_TYPE_CHOICES,  # ← NEW: Import for validation
 )
 
 try:
@@ -635,6 +635,16 @@ class ProviderCertificationSerializer(serializers.ModelSerializer):
     document_url = serializers.SerializerMethodField()
     allowed_file_types = serializers.SerializerMethodField()
     max_file_sizes = serializers.SerializerMethodField()
+    
+    # ═══════════════════════════════════════════════════════════════════
+    # NEW: Service types field for linking cert to services
+    # ═══════════════════════════════════════════════════════════════════
+    certified_service_types = serializers.ListField(
+        child=serializers.ChoiceField(choices=SERVICE_TYPE_CHOICES),
+        required=False,
+        allow_empty=True,
+        help_text="Services this certification qualifies for"
+    )
 
     class Meta:
         model = ProviderCertification
@@ -648,6 +658,7 @@ class ProviderCertificationSerializer(serializers.ModelSerializer):
             'expiry_date',
             'is_verified',
             'is_expired',
+            'certified_service_types',  # ← NEW
             'created_at',
             'allowed_file_types',
             'max_file_sizes',
@@ -789,7 +800,6 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             "referral_discount_percent",
             "referral_discount_amount",
             "pre_discount_price",
-            "referral_credit_refunded",
         ]
         # Keep booking/payment truth server-controlled.
         read_only_fields = [
@@ -837,7 +847,6 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             "stripe_refund_id",
             "flutterwave_refund_id",
             "provider_cancellation_fee",
-            "referral_credit_refunded",
         ]
 
     def get_auto_cancel_warning(self, obj):
