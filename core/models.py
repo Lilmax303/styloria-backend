@@ -99,11 +99,18 @@ CERTIFICATION_REQUIRED_SERVICES = {
         'keywords': ['massage', 'massage therapy', 'massage therapist', 'lmt', 'bodywork', 'therapeutic massage'],
         'message': 'Massage services require a verified massage therapy certification to protect both you and your clients.',
     },
-    # Add more services here if needed in the future
-    # 'tattoo': {
-    #     'keywords': ['tattoo', 'tattoo artist', 'body art', 'tattooing'],
-    #     'message': 'Tattoo services require a verified tattoo artist certification.',
-    # },
+    'tattoo': {
+        'keywords': ['tattoo', 'tattoo artist', 'body art', 'tattooing', 'tattoo license'],
+        'message': 'Tattoo services require a verified tattoo artist certification to ensure safety and compliance.',
+    },
+    'waxing': {
+        'keywords': ['waxing', 'esthetician', 'aesthetician', 'wax technician', 'wax specialist', 'cosmetology'],
+        'message': 'Waxing services require a verified esthetician or cosmetology certification.',
+    },
+    'facial': {
+        'keywords': ['facial', 'esthetician', 'aesthetician', 'skincare', 'skin care', 'cosmetology', 'facial treatment'],
+        'message': 'Facial services require a verified esthetician or skincare certification.',
+    },
 }
 
 
