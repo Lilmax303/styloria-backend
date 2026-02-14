@@ -280,8 +280,13 @@ def _check_service_certification_requirement(provider, service_type: str) -> dic
     """
     Check if a service requires certification and if the provider has it.
     Returns error dict if requirement not met, None if OK.
+    
+    Uses TWO matching strategies:
+      1. Primary: certified_service_types JSONField contains the service type
+      2. Fallback: keyword matching on certification name
     """
     from core.models import CERTIFICATION_REQUIRED_SERVICES, ProviderCertification
+    from django.db.models import Q
     
     service_type_lower = service_type.lower().strip()
     
@@ -292,64 +297,91 @@ def _check_service_certification_requirement(provider, service_type: str) -> dic
     keywords = requirement['keywords']
     message = requirement['message']
     
-    # Check if provider has a VERIFIED certification matching any keyword
-    has_verified_cert = ProviderCertification.objects.filter(
+    # ═══════════════════════════════════════════════════════════════
+    # METHOD 1 (Primary): Explicit service linking via JSONField
+    # ═══════════════════════════════════════════════════════════════
+    explicit_match = ProviderCertification.objects.filter(
         provider=provider,
         is_verified=True,
-    ).exists()
+        certified_service_types__contains=[service_type_lower],
+    ).first()
     
-    if not has_verified_cert:
-        return {
-            "detail": message,
-            "error_code": "certification_required",
-            "service_type": service_type,
-            "requirement": {
-                "service": service_type,
-                "keywords": keywords,
-                "has_any_verified_cert": False,
-                "has_matching_cert": False,
-            },
-        }
+    # ═══════════════════════════════════════════════════════════════
+    # METHOD 2 (Fallback): Keyword matching on cert name
+    # ═══════════════════════════════════════════════════════════════
+    keyword_match = None
+    if not explicit_match:
+        keyword_query = Q()
+        for keyword in keywords:
+            keyword_query |= Q(name__icontains=keyword)
+        
+        keyword_match = ProviderCertification.objects.filter(
+            provider=provider,
+            is_verified=True,
+        ).filter(keyword_query).first()
     
-    # Check if any verified certification matches the keywords (case-insensitive)
-    from django.db.models import Q
-    keyword_query = Q()
-    for keyword in keywords:
-        keyword_query |= Q(name__icontains=keyword)
-
-    matching_cert = ProviderCertification.objects.filter(
-        provider=provider,
-        is_verified=True,
-    ).filter(keyword_query).first()
+    matching_cert = explicit_match or keyword_match
     
     if not matching_cert:
+        # Check context for better error messages
+        has_any_verified = ProviderCertification.objects.filter(
+            provider=provider,
+            is_verified=True,
+        ).exists()
+        
+        # Check for pending certs linked to this service (explicit or keyword)
+        keyword_query = Q()
+        for keyword in keywords:
+            keyword_query |= Q(name__icontains=keyword)
+        
+        has_pending = ProviderCertification.objects.filter(
+            provider=provider,
+            is_verified=False,
+        ).filter(
+            Q(certified_service_types__contains=[service_type_lower]) | keyword_query
+        ).exists()
+        
+        if has_pending:
+            detail_msg = (
+                f"Your certification for '{service_type}' is pending admin verification. "
+                f"You'll be able to offer this service once it's approved (usually 24-48 hours)."
+            )
+        elif has_any_verified:
+            detail_msg = (
+                f"{message} You have verified certifications, but none are linked to "
+                f"'{service_type}'. Please upload a new certification and select "
+                f"'{service_type}' as a covered service."
+            )
+        else:
+            detail_msg = message
+        
         return {
-            "detail": f"{message} Please ensure your certification name includes relevant keywords (e.g., 'massage therapy', 'licensed massage therapist').",
+            "detail": detail_msg,
             "error_code": "certification_required",
             "service_type": service_type,
             "requirement": {
                 "service": service_type,
                 "keywords": keywords,
-                "has_any_verified_cert": True,
+                "has_any_verified_cert": has_any_verified,
                 "has_matching_cert": False,
+                "has_pending_cert": has_pending,
             },
         }
     
     # Check if certification is expired
     if matching_cert.is_expired:
         return {
-            "detail": f"Your massage certification '{matching_cert.name}' has expired. Please upload a valid certification.",
+            "detail": f"Your certification '{matching_cert.name}' for {service_type} has expired. Please upload a valid certification.",
             "error_code": "certification_expired",
             "service_type": service_type,
         }
     
     return None  # All checks passed
 
-
 def _get_provider_certification_status(provider) -> dict:
     """
     Get certification status for all services that require certification.
-    Returns dict like: {'massage': {'has_verified_cert': True, 'cert_name': 'LMT License'}}
+    Uses both explicit service linking AND keyword fallback.
     """
     from core.models import CERTIFICATION_REQUIRED_SERVICES, ProviderCertification
     from django.db.models import Q
@@ -359,26 +391,45 @@ def _get_provider_certification_status(provider) -> dict:
     for service_type, requirement in CERTIFICATION_REQUIRED_SERVICES.items():
         keywords = requirement['keywords']
 
-        # Build query for matching keywords
-        keyword_query = Q()
-        for keyword in keywords:
-            keyword_query |= Q(name__icontains=keyword)
-        
-        # Find matching verified certification
+        # ═══════════════════════════════════════════════════════════
+        # VERIFIED: Check explicit linking first, then keyword fallback
+        # ═══════════════════════════════════════════════════════════
         matching_cert = ProviderCertification.objects.filter(
             provider=provider,
             is_verified=True,
-        ).filter(keyword_query).first()
+            certified_service_types__contains=[service_type],
+        ).first()
         
-        # Also check for pending (uploaded but not yet verified)
+        match_method = 'explicit' if matching_cert else None
+        
+        if not matching_cert:
+            keyword_query = Q()
+            for keyword in keywords:
+                keyword_query |= Q(name__icontains=keyword)
+            matching_cert = ProviderCertification.objects.filter(
+                provider=provider,
+                is_verified=True,
+            ).filter(keyword_query).first()
+            if matching_cert:
+                match_method = 'keyword'
+        
+        # ═══════════════════════════════════════════════════════════
+        # PENDING: Check explicit linking first, then keyword fallback
+        # ═══════════════════════════════════════════════════════════
         pending_cert = ProviderCertification.objects.filter(
             provider=provider,
             is_verified=False,
-        ).filter(keyword_query).first()
-
-        is_expired = False
-        if matching_cert and hasattr(matching_cert, 'is_expired'):
-            is_expired = matching_cert.is_expired        
+            certified_service_types__contains=[service_type],
+        ).first()
+        
+        if not pending_cert:
+            keyword_query = Q()
+            for keyword in keywords:
+                keyword_query |= Q(name__icontains=keyword)
+            pending_cert = ProviderCertification.objects.filter(
+                provider=provider,
+                is_verified=False,
+            ).filter(keyword_query).first()
 
         status[service_type] = {
             'required': True,
@@ -390,6 +441,7 @@ def _get_provider_certification_status(provider) -> dict:
             'pending_cert_name': pending_cert.name if pending_cert else None,
             'keywords': keywords,
             'message': requirement['message'],
+            'match_method': match_method,
         }
     
     return status
@@ -2295,7 +2347,7 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
                     "error_code": "file_too_large",
                 }, status=400)
         
-        # Prepare data
+                # Prepare data
         issue_date = request.data.get('issue_date') or None
         expiry_date = request.data.get('expiry_date') or None
         issuing_org = request.data.get('issuing_organization', '').strip()
@@ -2303,6 +2355,39 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
         print(f"[CERT] Issue date: {issue_date}")
         print(f"[CERT] Expiry date: {expiry_date}")
         print(f"[CERT] Issuing org: {issuing_org}")
+        
+        # ═══════════════════════════════════════════════════
+        # Parse certified_service_types (services this cert covers)
+        # ═══════════════════════════════════════════════════
+        import json as _json
+        
+        raw_service_types = request.data.get('certified_service_types', '[]')
+        
+        if isinstance(raw_service_types, list):
+            # Already a list (e.g., from JSON content-type)
+            certified_service_types = raw_service_types
+        elif isinstance(raw_service_types, str):
+            raw_service_types = raw_service_types.strip()
+            if raw_service_types:
+                try:
+                    certified_service_types = _json.loads(raw_service_types)
+                except (_json.JSONDecodeError, TypeError):
+                    # Could be comma-separated: "massage,facial"
+                    certified_service_types = [
+                        s.strip() for s in raw_service_types.split(',') if s.strip()
+                    ]
+            else:
+                certified_service_types = []
+        else:
+            certified_service_types = []
+        
+        # Validate against known service types
+        valid_service_types = [choice[0] for choice in SERVICE_TYPE_CHOICES]
+        certified_service_types = [
+            st for st in certified_service_types if st in valid_service_types
+        ]
+        
+        print(f"[CERT] Certified service types: {certified_service_types}")
         
         # Create certification
         print(f"[CERT] Creating certification object...")
@@ -2315,6 +2400,7 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
                 document=document,
                 issue_date=issue_date,
                 expiry_date=expiry_date,
+                certified_service_types=certified_service_types,
             )
             print(f"[CERT] SUCCESS! Certification created with ID: {certification.id}")
             
@@ -2392,9 +2478,7 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
     def certification_upload_info(self, request):
         """
         GET /api/service_providers/certification_upload_info/
-        Returns file upload requirements for certifications.
-        
-        Use this to show users what files are allowed before they attempt upload.
+        Returns file upload requirements and available service types for certifications.
         """
         return Response({
             "allowed_file_types": {
@@ -2422,11 +2506,18 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
                 }
             },
             "max_certifications": 10,
+            "available_service_types": [
+                {"value": choice[0], "label": choice[1]}
+                for choice in SERVICE_TYPE_CHOICES
+            ],
+            "certification_required_services": list(CERTIFICATION_REQUIRED_SERVICES.keys()),
             "tips": [
                 "Ensure your document is clear and readable",
                 "Include your full name on the certification",
-                "For massage services, include 'massage' in the certification name",
-                "Certifications will be verified by our admin team"
+                "Select which services your certification covers when uploading",
+                "Services like massage REQUIRE a verified certification before you can offer them",
+                "Your trust score increases per-service based on linked certifications",
+                "Certifications will be verified by our admin team (24-48 hours)"
             ]
         })
 

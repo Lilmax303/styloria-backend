@@ -7,6 +7,7 @@ from django.utils.translation import gettext_lazy as _
 from core.models import PasswordResetCode
 from core.models import RequesterReview
 from core.models import ProviderCertification
+from core.models import SERVICE_TYPE_CHOICES, CERTIFICATION_REQUIRED_SERVICES
 from django.utils.html import format_html
 from django.urls import reverse
 from django.shortcuts import get_object_or_404, redirect
@@ -1299,6 +1300,7 @@ class ProviderCertificationAdmin(admin.ModelAdmin):
         'provider_username',
         'name',
         'issuing_organization',
+        'linked_services_display',
         'verification_status_display',
         'expiry_status',
         'created_at',
@@ -1327,6 +1329,15 @@ class ProviderCertificationAdmin(admin.ModelAdmin):
         }),
         ('Certification Details', {
             'fields': ('name', 'issuing_organization', 'issue_date', 'expiry_date'),
+        }),
+        ('Linked Services', {
+            'fields': ('certified_service_types',),
+            'description': (
+                'Services this certification qualifies for. '
+                'This is set by the provider during upload. '
+                'You can edit it during verification if needed. '
+                'Format: JSON list, e.g. ["massage", "facial"]'
+            ),
         }),
         ('Document', {
             'fields': ('document', 'document_preview'),
@@ -1362,6 +1373,35 @@ class ProviderCertificationAdmin(admin.ModelAdmin):
             return format_html('<span style="color: red; font-weight: bold;">⚠️ Expired</span>')
         return format_html('<span style="color: green;">✓ Valid</span>')
     expiry_status.short_description = 'Expiry Status'
+
+    def linked_services_display(self, obj):
+        """Show which services this certification covers."""
+        services = obj.certified_service_types or []
+        if not services:
+            return format_html('<span style="color: gray; font-style: italic;">No services linked</span>')
+        
+        # Map service IDs to labels
+        service_labels = dict(SERVICE_TYPE_CHOICES)
+        
+        badges = []
+        for svc in services:
+            label = service_labels.get(svc, svc)
+            # Highlight certification-required services in orange
+            if svc in CERTIFICATION_REQUIRED_SERVICES:
+                badges.append(
+                    f'<span style="display:inline-block; background:#FEF3C7; color:#92400E; '
+                    f'padding:2px 8px; border-radius:10px; font-size:11px; margin:2px;">'
+                    f'🔒 {label}</span>'
+                )
+            else:
+                badges.append(
+                    f'<span style="display:inline-block; background:#DBEAFE; color:#1E40AF; '
+                    f'padding:2px 8px; border-radius:10px; font-size:11px; margin:2px;">'
+                    f'{label}</span>'
+                )
+        
+        return format_html(' '.join(badges))
+    linked_services_display.short_description = 'Linked Services'
     
     def has_document(self, obj):
         if obj.document:
