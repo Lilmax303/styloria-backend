@@ -20,6 +20,7 @@ from core.models import (
 )
 from core.utils.regions import is_african_country_name
 from core.utils.paystack_countries import is_paystack_country, get_paystack_currency
+from core.utils.currency import convert_amount as currency_convert_amount, get_currency_symbol
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
@@ -63,6 +64,10 @@ def credit_provider_pending_from_request(sr: ServiceRequest, is_tip: bool = Fals
     Called when a booking becomes completed (confirmed by both).
     Creates a pending wallet credit entry and updates ServiceRequest.wallet_credited.
 
+    CURRENCY CONVERSION: The booking stores amounts in the REQUESTER's currency.
+    This function converts to the PROVIDER's preferred currency before crediting
+    the wallet. Providers only ever see/receive their own currency.
+
     If is_tip=True, credits the tip_amount instead of provider earnings.
     Tips have a shorter maturation period (48 hours vs 7 days for earnings).
     """
@@ -77,14 +82,19 @@ def credit_provider_pending_from_request(sr: ServiceRequest, is_tip: bool = Fals
         return False
 
     provider = sr.service_provider
-    currency_u = (sr.currency or "USD").upper().strip()
+
+    # CRITICAL: booking currency is the REQUESTER's currency
+    booking_currency = (sr.currency or "USD").upper().strip()
+
+    # Provider's own currency (what their wallet should be in)
+    provider_currency = (provider.user.preferred_currency or "USD").upper().strip()
 
     if is_tip:
         # Credit the tip amount
         amount = sr.tip_amount
         if amount is None or amount <= Decimal("0.00"):
             return True
-        description = f"Tip for booking #{sr.id}"
+        description_base = f"Tip for booking #{sr.id}"
         # Tips have shorter cooldown (48 hours)
         cooldown_hours = TIP_COOLDOWN_HOURS
     else:
@@ -92,10 +102,9 @@ def credit_provider_pending_from_request(sr: ServiceRequest, is_tip: bool = Fals
         amount = sr.provider_net_amount or sr.provider_earnings_amount
         if amount is None:
             return False
-        description = f"Earning for booking #{sr.id}"
+        description_base = f"Earning for booking #{sr.id}"
         # Regular earnings: 7 days
         cooldown_hours = int(getattr(settings, "PAYOUT_COOLDOWN_HOURS", 168))
-
 
     amount = _q(amount)
     if amount <= Decimal("0.00"):
@@ -105,9 +114,36 @@ def credit_provider_pending_from_request(sr: ServiceRequest, is_tip: bool = Fals
             sr.save(update_fields=["wallet_credited", "wallet_credited_at"])
         return True
 
+    # ═══════════════════════════════════════════════════════════════
+    # CURRENCY CONVERSION: Convert from booking currency to provider currency
+    # ═══════════════════════════════════════════════════════════════
+    if booking_currency != provider_currency:
+        try:
+            converted = currency_convert_amount(float(amount), booking_currency, provider_currency)
+            converted_amount = _q(Decimal(str(converted)))
+            description = (
+                f"{description_base} "
+                f"(converted from {get_currency_symbol(booking_currency)}{amount} {booking_currency})"
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(
+                f"Currency conversion failed ({booking_currency}->{provider_currency}) "
+                f"for booking #{sr.id}: {e}. Falling back to original amount."
+            )
+            converted_amount = amount
+            description = f"{description_base} (conversion failed, original {booking_currency} amount)"
+    else:
+        converted_amount = amount
+        description = description_base
+    # ═══════════════════════════════════════════════════════════════
+
+    # Use provider's currency for the wallet
+    wallet_currency = provider_currency
+
     available_at = timezone.now() + timezone.timedelta(hours=cooldown_hours)
 
-    wallet = get_or_create_wallet(provider, currency_u)
+    wallet = get_or_create_wallet(provider, wallet_currency)
 
     with transaction.atomic():
         if not is_tip:
@@ -123,14 +159,14 @@ def credit_provider_pending_from_request(sr: ServiceRequest, is_tip: bool = Fals
             service_request=sr_locked,
             direction="credit",
             kind="earning",
-            amount=amount,
+            amount=converted_amount,
             status="pending",
             available_at=available_at,
             description=description,
         )
 
-        wallet.pending_balance = _q(wallet.pending_balance + amount)
-        wallet.lifetime_earnings = _q(wallet.lifetime_earnings + amount)
+        wallet.pending_balance = _q(wallet.pending_balance + converted_amount)
+        wallet.lifetime_earnings = _q(wallet.lifetime_earnings + converted_amount)
         wallet.save(update_fields=["pending_balance", "lifetime_earnings", "updated_at"])
 
         if not is_tip:
@@ -138,11 +174,15 @@ def credit_provider_pending_from_request(sr: ServiceRequest, is_tip: bool = Fals
             sr_locked.wallet_credited_at = timezone.now()
             sr_locked.save(update_fields=["wallet_credited", "wallet_credited_at"])
 
-    # Notify provider about tip credit
+    # Notify provider about tip credit (in their currency)
     if is_tip:
+        symbol = get_currency_symbol(wallet_currency)
         _notify_provider_payout(
             provider=provider,
-            message=f"You received a tip of {amount} {currency_u} for booking #{sr.id}! It will be available for cashout in 48 hours.",
+            message=(
+                f"You received a tip of {symbol}{converted_amount} {wallet_currency} "
+                f"for booking #{sr.id}! It will be available for cashout in 48 hours."
+            ),
             notification_type="tip_received",
         )
 
@@ -157,22 +197,47 @@ def credit_provider_cancellation_fee(sr: ServiceRequest, amount: Decimal) -> boo
     """
     Credits provider's PENDING balance with their share of cancellation fee.
     Provider gets 80% of the cancellation penalty.
+
+    CURRENCY CONVERSION: Converts from booking currency to provider's currency.
     """
     if not sr.service_provider_id:
         return False
 
     provider = sr.service_provider
-    currency_u = (sr.currency or "USD").upper().strip()
+    booking_currency = (sr.currency or "USD").upper().strip()
+    provider_currency = (provider.user.preferred_currency or "USD").upper().strip()
     amount = _q(amount)
 
     if amount <= Decimal("0.00"):
         return True
 
+    # Convert to provider's currency if different
+    if booking_currency != provider_currency:
+        try:
+            converted = currency_convert_amount(float(amount), booking_currency, provider_currency)
+            converted_amount = _q(Decimal(str(converted)))
+            description = (
+                f"Cancellation fee for booking #{sr.id} "
+                f"(converted from {get_currency_symbol(booking_currency)}{amount} {booking_currency})"
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(
+                f"Currency conversion failed for cancellation fee booking #{sr.id}: {e}"
+            )
+            converted_amount = amount
+            description = f"Cancellation fee for booking #{sr.id} (conversion failed)"
+    else:
+        converted_amount = amount
+        description = f"Cancellation fee for booking #{sr.id}"
+
+    wallet_currency = provider_currency
+
     # Same 7-day maturation as regular earnings
     cooldown_hours = int(getattr(settings, "PAYOUT_COOLDOWN_HOURS", 168))
     available_at = timezone.now() + timezone.timedelta(hours=cooldown_hours)
 
-    wallet = get_or_create_wallet(provider, currency_u)
+    wallet = get_or_create_wallet(provider, wallet_currency)
 
     with transaction.atomic():
         WalletLedgerEntry.objects.create(
@@ -180,14 +245,14 @@ def credit_provider_cancellation_fee(sr: ServiceRequest, amount: Decimal) -> boo
             service_request=sr,
             direction="credit",
             kind="earning",
-            amount=amount,
+            amount=converted_amount,
             status="pending",
             available_at=available_at,
-            description=f"Cancellation fee for booking #{sr.id}",
+            description=description,
         )
 
-        wallet.pending_balance = _q(wallet.pending_balance + amount)
-        wallet.lifetime_earnings = _q(wallet.lifetime_earnings + amount)
+        wallet.pending_balance = _q(wallet.pending_balance + converted_amount)
+        wallet.lifetime_earnings = _q(wallet.lifetime_earnings + converted_amount)
         wallet.save(update_fields=["pending_balance", "lifetime_earnings", "updated_at"])
 
     return True
