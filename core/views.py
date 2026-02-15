@@ -9,8 +9,10 @@ from datetime import timedelta
 import requests
 from io import BytesIO
 import uuid
+import uuid as _uuid
 import statistics
 import os
+import os as _os
 import logging
 
 logger = logging.getLogger(__name__)
@@ -2183,6 +2185,11 @@ class ServiceProviderViewSet(viewsets.ModelViewSet):
                     },
                     status=400,
                 )
+
+            # Shorten filename to avoid varchar overflow
+            ext = _os.path.splitext(f.name)[1]
+            f.name = f"{_uuid.uuid4().hex[:16]}{ext}"
+
 
             m = ProviderPortfolioMedia.objects.create(
                 post=post,

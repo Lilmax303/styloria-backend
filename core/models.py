@@ -718,6 +718,7 @@ class ProviderPortfolioMedia(models.Model):
 
     file = models.FileField(
         upload_to="provider_portfolio/%Y/%m/%d/",
+        max_length=500,
         validators=[
             FileExtensionValidator(
                 allowed_extensions=["jpg", "jpeg", "png", "webp", "mp4", "mov", "m4v", "webm"]
@@ -728,6 +729,7 @@ class ProviderPortfolioMedia(models.Model):
     # Optional: store thumbnail for videos (generated server-side later)
     thumbnail = models.ImageField(
         upload_to="provider_portfolio_thumbs/%Y/%m/%d/",
+        max_length=500,
         null=True,
         blank=True,
     )
