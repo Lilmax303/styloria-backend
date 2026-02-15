@@ -718,6 +718,7 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
     converted_price = serializers.SerializerMethodField()
     converted_estimated_price = serializers.SerializerMethodField()
     currency_symbol = serializers.SerializerMethodField()
+    booking_currency_symbol = serializers.SerializerMethodField()
 
     distance_miles = serializers.SerializerMethodField()
     requester_first_name = serializers.SerializerMethodField()
@@ -789,6 +790,7 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             "converted_price",
             "converted_estimated_price",
             "currency_symbol",
+            "booking_currency_symbol",
             "distance_miles",
             "has_user_review",
             "requester_first_name",
@@ -888,6 +890,10 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
         if not request or not request.user.is_authenticated:
             return '$'
         return get_currency_symbol(request.user.preferred_currency)
+
+    def get_booking_currency_symbol(self, obj):
+        """Symbol of the currency the booking was originally paid in (requester's currency)."""
+        return get_currency_symbol(obj.currency or 'USD')
 
     provider_portfolio_posts = serializers.SerializerMethodField()
 
