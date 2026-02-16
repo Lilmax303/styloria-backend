@@ -7205,51 +7205,115 @@ def admin_release_payout(request, pk):
 # -------------------------
 # PROVIDER EARNINGS
 # -------------------------
+
+# Category definitions for earnings filtering
+EARNINGS_CATEGORIES = {
+    "all":                     "All Earnings",
+    "completed_services":      "Completed Service Payments",
+    "tips":                    "Tips Received",
+    "cancellation_penalty":    "Cancellation Penalty Income",
+    "pending":                 "Pending / Processing Earnings",
+    "instant_cashouts":        "Instant Cashouts",
+    "scheduled_payouts":       "Scheduled Payouts",
+    "refunds":                 "Refunds / Reversals",
+    "adjustments":             "Adjustments / Corrections",
+}
+
+PERIOD_LABELS = {
+    "daily":      "Daily",
+    "weekly":     "Weekly",
+    "monthly":    "Monthly",
+    "yearly":     "Yearly",
+    "all_time":   "All Time",
+    "this_month": "This Month",
+    "last_month": "Last Month",
+    "ytd":        "Year to Date",
+    "all":        "All Time",
+}
+
+
+def _build_earnings_queryset(provider, period, category):
+    """
+    Build a filtered WalletLedgerEntry queryset for a provider
+    based on period and category.
+    Returns (queryset, since_dt_or_tuple, category_label, period_label).
+    """
+    wallets = ProviderWallet.objects.filter(provider=provider)
+    qs = WalletLedgerEntry.objects.filter(wallet__in=wallets).select_related(
+        "wallet", "service_request", "payout"
+    )
+
+    # ── Time filter ──
+    try:
+        since = _provider_period_to_since(period)
+    except ValueError:
+        raise ValueError("Invalid period.")
+
+    if isinstance(since, tuple):
+        start, end = since
+        qs = qs.filter(created_at__gte=start, created_at__lt=end)
+    elif since is not None:
+        qs = qs.filter(created_at__gte=since)
+
+    # ── Category filter ──
+    category = (category or "all").lower().strip()
+
+    if category == "completed_services":
+        qs = qs.filter(
+            direction="credit",
+            kind="earning",
+            description__istartswith="Earning for booking",
+        )
+    elif category == "tips":
+        qs = qs.filter(
+            direction="credit",
+            kind="earning",
+            description__istartswith="Tip for booking",
+        )
+    elif category == "cancellation_penalty":
+        qs = qs.filter(
+            direction="credit",
+            kind="earning",
+            description__istartswith="Cancellation fee for booking",
+        )
+    elif category == "pending":
+        qs = qs.filter(
+            direction="credit",
+            status="pending",
+        )
+    elif category == "instant_cashouts":
+        qs = qs.filter(
+            direction="debit",
+            kind="payout",
+            payout__method="instant",
+        )
+    elif category == "scheduled_payouts":
+        qs = qs.filter(
+            direction="debit",
+            kind="payout",
+            payout__method__in=["weekly", "monthly"],
+        )
+    elif category == "refunds":
+        qs = qs.filter(kind="refund")
+    elif category == "adjustments":
+        qs = qs.filter(kind="adjustment")
+    # "all" → no extra filter
+
+    category_label = EARNINGS_CATEGORIES.get(category, "All Earnings")
+    period_label = PERIOD_LABELS.get(period, period.replace("_", " ").title())
+
+    return qs, since, category_label, period_label
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def provider_earnings_summary(request):
-    block = _require_provider_kyc_approved(request.user)
-    if block:
-        return Response(block, status=403)
+    """
+    GET /api/providers/earnings/summary/?period=monthly&category=all
 
-    try:
-        provider = ServiceProvider.objects.get(user=request.user)
-    except ServiceProvider.DoesNotExist:
-        return Response({"detail": "You are not a provider."}, status=400)
-
-    released_qs = ServiceRequest.objects.filter(
-        service_provider=provider,
-        payment_status="paid",
-        status="completed",
-        payout_released=True,
-    )
-
-    pending_qs = ServiceRequest.objects.filter(
-        service_provider=provider,
-        payment_status="paid",
-        status="completed",
-        payout_released=False,
-        user_confirmed_completion=True,
-        provider_confirmed_completion=True,
-    )
-
-    
-    # Use provider_net_amount if available (85% minus Stripe fee), fallback to provider_earnings_amount.
-    total_paid = float(released_qs.aggregate(total=Sum(Coalesce("provider_net_amount", "provider_earnings_amount")))["total"] or 0.0)
-    total_pending = float(pending_qs.aggregate(total=Sum(Coalesce("provider_net_amount", "provider_earnings_amount")))["total"] or 0.0)
-
-    data = {
-        "currency": (request.user.preferred_currency or "USD").lower(),
-        "total": total_paid + total_pending,
-        "paid": total_paid,
-        "pending": total_pending,
-    }
-    return Response(data)
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def provider_earnings_report_pdf(request):
+    Returns summary stats + available categories and periods for the UI.
+    All amounts in provider's preferred currency.
+    """
     block = _require_provider_kyc_approved(request.user)
     if block:
         return Response(block, status=403)
@@ -7260,74 +7324,556 @@ def provider_earnings_report_pdf(request):
         return Response({"detail": "You are not a provider."}, status=400)
 
     period = request.GET.get("period", "all_time").lower().strip()
-    now = timezone.now()
-
-    qs = ServiceRequest.objects.filter(
-        service_provider=provider,
-        payment_status="paid",
-        status="completed",
-        payout_released=True
-    )
+    category = request.GET.get("category", "all").lower().strip()
+    currency = (provider.user.preferred_currency or "USD").upper()
 
     try:
-        since = _provider_period_to_since(period)
+        qs, since, category_label, period_label = _build_earnings_queryset(provider, period, category)
     except ValueError:
         return Response(
-            {
-                "detail": "Invalid period.",
-                "allowed": [
-                    "this_month",
-                    "last_month",
-                    "ytd",
-                    "all_time",
-                    "daily",
-                    "weekly",
-                    "monthly",
-                    "yearly",
-                    "all",
-                ],
-            },
+            {"detail": "Invalid period.", "allowed_periods": list(PERIOD_LABELS.keys())},
             status=400,
         )
 
-    # last_month returns a range tuple
+    # Compute summary stats
+    credits_qs = qs.filter(direction="credit")
+    debits_qs = qs.filter(direction="debit")
+
+    total_credits = float(credits_qs.aggregate(t=Sum("amount"))["t"] or 0.0)
+    total_debits = float(debits_qs.aggregate(t=Sum("amount"))["t"] or 0.0)
+    transaction_count = qs.count()
+
+    # Overall wallet stats (not filtered)
+    all_wallets = ProviderWallet.objects.filter(provider=provider)
+    total_available = float(all_wallets.aggregate(t=Sum("available_balance"))["t"] or 0.0)
+    total_pending = float(all_wallets.aggregate(t=Sum("pending_balance"))["t"] or 0.0)
+    lifetime_earnings = float(all_wallets.aggregate(t=Sum("lifetime_earnings"))["t"] or 0.0)
+    lifetime_payouts = float(all_wallets.aggregate(t=Sum("lifetime_payouts"))["t"] or 0.0)
+
+    data = {
+        "currency": currency.lower(),
+        "currency_symbol": get_currency_symbol(currency),
+
+        # Overall wallet balances (always shown)
+        "available_balance": total_available,
+        "pending_balance": total_pending,
+        "lifetime_earnings": lifetime_earnings,
+        "lifetime_payouts": lifetime_payouts,
+        "total_balance": total_available + total_pending,
+
+        # Filtered summary
+        "filtered_period": period,
+        "filtered_category": category,
+        "period_label": period_label,
+        "category_label": category_label,
+        "total_credits": total_credits,
+        "total_debits": total_debits,
+        "net_amount": total_credits - total_debits,
+        "transaction_count": transaction_count,
+
+        # For dropdowns
+        "available_categories": [
+            {"key": k, "label": v} for k, v in EARNINGS_CATEGORIES.items()
+        ],
+        "available_periods": [
+            {"key": k, "label": v} for k, v in PERIOD_LABELS.items()
+            if k not in ("all",)  # skip duplicate of all_time
+        ],
+    }
+    return Response(data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def provider_earnings_transactions(request):
+    """
+    GET /api/providers/earnings/transactions/?period=monthly&category=all&page=1
+
+    Returns paginated filtered transactions for the earnings screen.
+    """
+    block = _require_provider_kyc_approved(request.user)
+    if block:
+        return Response(block, status=403)
+
+    try:
+        provider = ServiceProvider.objects.get(user=request.user)
+    except ServiceProvider.DoesNotExist:
+        return Response({"detail": "You are not a provider."}, status=400)
+
+    period = request.GET.get("period", "all_time").lower().strip()
+    category = request.GET.get("category", "all").lower().strip()
+
+    try:
+        qs, since, category_label, period_label = _build_earnings_queryset(provider, period, category)
+    except ValueError:
+        return Response({"detail": "Invalid period."}, status=400)
+
+    qs = qs.order_by("-created_at")
+
+    # Simple pagination
+    page = max(int(request.GET.get("page", 1)), 1)
+    page_size = min(int(request.GET.get("page_size", 50)), 200)
+    start = (page - 1) * page_size
+    end = start + page_size
+    total_count = qs.count()
+
+    entries = qs[start:end]
+
+    # Aggregate for the FULL filtered set (not just page)
+    agg = qs.aggregate(
+        total_credits=Sum(Case(
+            When(direction="credit", then="amount"),
+            default=Value(0),
+            output_field=DecimalField(),
+        )),
+        total_debits=Sum(Case(
+            When(direction="debit", then="amount"),
+            default=Value(0),
+            output_field=DecimalField(),
+        )),
+    )
+
+    currency = (provider.user.preferred_currency or "USD").upper()
+
+    transactions = []
+    for entry in entries:
+        sr = entry.service_request
+        payout = entry.payout
+
+        # Build rich description
+        detail_parts = []
+        if sr:
+            detail_parts.append(f"Booking #{sr.id}")
+            if sr.service_type:
+                detail_parts.append(sr.get_service_type_display() if hasattr(sr, 'get_service_type_display') else sr.service_type)
+            if sr.user:
+                detail_parts.append(f"Client: @{sr.user.username}")
+        if payout:
+            detail_parts.append(f"Payout #{payout.id}")
+            if payout.method:
+                detail_parts.append(f"Method: {payout.method}")
+
+        # Determine visual category tag
+        if entry.description.lower().startswith("tip for booking"):
+            entry_category = "tip"
+        elif entry.description.lower().startswith("cancellation fee"):
+            entry_category = "cancellation_penalty"
+        elif entry.description.lower().startswith("earning for booking"):
+            entry_category = "completed_service"
+        elif entry.kind == "payout":
+            entry_category = "payout"
+        elif entry.kind == "refund":
+            entry_category = "refund"
+        elif entry.kind == "adjustment":
+            entry_category = "adjustment"
+        else:
+            entry_category = entry.kind
+
+        transactions.append({
+            "id": entry.id,
+            "direction": entry.direction,
+            "kind": entry.kind,
+            "amount": str(entry.amount),
+            "status": entry.status,
+            "description": entry.description,
+            "detail": " · ".join(detail_parts) if detail_parts else entry.description,
+            "entry_category": entry_category,
+            "currency": entry.wallet.currency if entry.wallet else currency,
+            "created_at": entry.created_at.isoformat(),
+            "available_at": entry.available_at.isoformat() if entry.available_at else None,
+            "service_request_id": sr.id if sr else None,
+            "payout_id": payout.id if payout else None,
+            "payout_status": payout.status if payout else None,
+            "payout_method": payout.method if payout else None,
+        })
+
+    return Response({
+        "transactions": transactions,
+        "total_count": total_count,
+        "page": page,
+        "page_size": page_size,
+        "has_more": end < total_count,
+        "period": period,
+        "category": category,
+        "period_label": period_label,
+        "category_label": category_label,
+        "currency": currency.lower(),
+        "currency_symbol": get_currency_symbol(currency),
+        "total_credits": str(agg["total_credits"] or 0),
+        "total_debits": str(agg["total_debits"] or 0),
+        "net_amount": str((agg["total_credits"] or 0) - (agg["total_debits"] or 0)),
+    })
+
+    
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def provider_earnings_report_pdf(request):
+    """
+    GET /api/providers/earnings/report/?period=monthly&category=all
+
+    Generates a professional PDF earnings report with:
+    - MDK Business Solution - STYLORIA letterhead
+    - Dynamic title based on filters
+    - Provider information block
+    - Transaction table with totals
+    - Summary statistics
+    - Footer with legal notes
+    """
+    block = _require_provider_kyc_approved(request.user)
+    if block:
+        return Response(block, status=403)
+
+    try:
+        provider = ServiceProvider.objects.get(user=request.user)
+    except ServiceProvider.DoesNotExist:
+        return Response({"detail": "You are not a provider."}, status=400)
+
+    period = request.GET.get("period", "all_time").lower().strip()
+    category = request.GET.get("category", "all").lower().strip()
+    now = timezone.now()
+
+    try:
+        qs, since, category_label, period_label = _build_earnings_queryset(provider, period, category)
+    except ValueError:
+        return Response(
+            {"detail": "Invalid period.", "allowed": list(PERIOD_LABELS.keys())},
+            status=400,
+        )
+
+    qs = qs.order_by("-created_at")
+    entries = list(qs[:500])  # Cap at 500 for PDF sanity
+
+    currency = (provider.user.preferred_currency or "USD").upper()
+    currency_sym = get_currency_symbol(currency)
+    user = provider.user
+
+    # Compute stats
+    total_credits = sum(e.amount for e in entries if e.direction == "credit")
+    total_debits = sum(e.amount for e in entries if e.direction == "debit")
+    net_total = total_credits - total_debits
+    tx_count = len(entries)
+
+    amounts = [e.amount for e in entries if e.amount > 0]
+    avg_amount = sum(amounts) / len(amounts) if amounts else Decimal("0.00")
+    max_amount = max(amounts) if amounts else Decimal("0.00")
+    min_amount = min(amounts) if amounts else Decimal("0.00")
+
+    # Date range for display
     if isinstance(since, tuple):
-        start, end = since
-        qs = qs.filter(completed_at__gte=start, completed_at__lt=end)
+        range_start, range_end = since
+        date_range_str = f"{range_start.strftime('%B %d, %Y')} – {range_end.strftime('%B %d, %Y')}"
     elif since is not None:
-        qs = qs.filter(completed_at__gte=since)
+        date_range_str = f"{since.strftime('%B %d, %Y')} – {now.strftime('%B %d, %Y')}"
+    else:
+        date_range_str = f"All Time (through {now.strftime('%B %d, %Y')})"
 
-    agg = qs.aggregate(total=Sum("offered_price"))
-    total = float(agg["total"] or 0.0)
-
+    # Build PDF
     buffer = BytesIO()
     p = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
 
-    _draw_styloria_watermark(p, width, height, text="STYLORIA")
+    # ── Report reference ID ──
+    sid = user.styloria_id or f"USR{user.id}"
+    report_ref = f"RPT-{sid}-{now.strftime('%Y%m%d%H%M')}"
 
-    p.setFont("Helvetica-Bold", 18)
-    p.drawString(50, height - 80, "Styloria Earnings Report")
+    # ── Dynamic title ──
+    if category == "all":
+        report_title = f"{period_label} Earnings Report"
+    else:
+        report_title = f"{period_label} {category_label} Earnings Report"
 
+    def _draw_page_frame(p_canvas, is_continuation=False):
+        """Draw letterhead, watermark, and footer on each page."""
+        _draw_styloria_watermark(p_canvas, width, height, text="STYLORIA")
 
-    p.setFont("Helvetica", 12)
-    p.drawString(50, height - 110, f"Provider: {provider.user.username}")
-    p.drawString(50, height - 130, f"Period: {period}")
-    p.drawString(50, height - 150, f"Generated at: {now.isoformat()}")
+        # ── Letterhead ──
+        p_canvas.setFont("Helvetica-Bold", 16)
+        p_canvas.drawCentredString(width / 2, height - 45, "MDK Business Solution - STYLORIA")
+        p_canvas.setFont("Helvetica", 9)
+        p_canvas.drawCentredString(width / 2, height - 60, "Richmond, Virginia, United States  ·  www.styloria.com  ·  support@styloria.com")
 
-    currency = (provider.user.preferred_currency or "USD").upper()
-    p.drawString(50, height - 190, f"Total earnings ({currency}): {total:.2f}")
-    p.drawString(50, height - 210, "Included: completed, paid bookings where payout has been released.")
+        # Separator line
+        p_canvas.setStrokeColorRGB(0.3, 0.3, 0.3)
+        p_canvas.setLineWidth(0.8)
+        p_canvas.line(50, height - 70, width - 50, height - 70)
+
+        # ── Footer on every page ──
+        p_canvas.setFont("Helvetica", 7)
+        p_canvas.setFillColorRGB(0.4, 0.4, 0.4)
+        p_canvas.drawCentredString(
+            width / 2, 35,
+            f"© {now.year} MDK Business Solution - STYLORIA. All rights reserved. This document is confidential."
+        )
+        p_canvas.drawCentredString(
+            width / 2, 25,
+            f"Ref: {report_ref}  ·  Generated: {now.strftime('%B %d, %Y at %I:%M %p UTC')}"
+        )
+        p_canvas.setFillColorRGB(0, 0, 0)
+
+        if is_continuation:
+            p_canvas.setFont("Helvetica-Bold", 11)
+            p_canvas.drawCentredString(width / 2, height - 88, f"{report_title} (continued)")
+            return height - 105
+        return None
+
+    # ══════════ PAGE 1 ══════════
+    _draw_page_frame(p)
+
+    # ── Report Title ──
+    p.setFont("Helvetica-Bold", 14)
+    p.drawCentredString(width / 2, height - 92, report_title.upper())
+
+    p.setStrokeColorRGB(0.3, 0.3, 0.3)
+    p.line(50, height - 100, width - 50, height - 100)
+
+    # ── Provider Information Block ──
+    y = height - 125
+    p.setFont("Helvetica-Bold", 11)
+    p.setFillColorRGB(0.15, 0.15, 0.15)
+    p.drawString(50, y, "PROVIDER INFORMATION")
+    y -= 5
+    p.setStrokeColorRGB(0.7, 0.7, 0.7)
+    p.line(50, y, width - 50, y)
+    y -= 16
+
+    info_rows = [
+        ("Full Name", f"{user.first_name} {user.last_name}".strip() or user.username),
+        ("Styloria ID", user.styloria_id or "N/A"),
+        ("Email", user.email or "N/A"),
+        ("Phone", user.phone_number or "N/A"),
+        ("Country / City", f"{user.country_name or 'N/A'} / {user.city_name or 'N/A'}"),
+        ("Member Since", user.date_joined.strftime("%B %d, %Y") if user.date_joined else "N/A"),
+        ("Report Currency", f"{currency} ({_currency_full_name(currency)})"),
+        ("Report Period", date_range_str),
+        ("Report Category", category_label),
+        ("Report Generated", now.strftime("%B %d, %Y at %I:%M %p UTC")),
+    ]
+
+    p.setFillColorRGB(0, 0, 0)
+    label_x = 55
+    value_x = 195
+    for label, value in info_rows:
+        p.setFont("Helvetica", 9)
+        p.drawString(label_x, y, label)
+        p.setFont("Helvetica-Bold", 9)
+        p.drawString(value_x, y, str(value)[:80])
+        y -= 15
+
+    # ── Earnings Summary Block ──
+    y -= 10
+    p.setFont("Helvetica-Bold", 11)
+    p.setFillColorRGB(0.15, 0.15, 0.15)
+    p.drawString(50, y, "EARNINGS SUMMARY")
+    y -= 5
+    p.setStrokeColorRGB(0.7, 0.7, 0.7)
+    p.line(50, y, width - 50, y)
+    y -= 16
+
+    p.setFillColorRGB(0, 0, 0)
+    summary_rows = [
+        ("Total Credits (Income)", f"{currency_sym}{_format_money(total_credits)} {currency}"),
+        ("Total Debits (Payouts)", f"{currency_sym}{_format_money(total_debits)} {currency}"),
+        ("Net Amount", f"{currency_sym}{_format_money(net_total)} {currency}"),
+        ("Total Transactions", str(tx_count)),
+        ("Average per Transaction", f"{currency_sym}{_format_money(avg_amount)} {currency}"),
+        ("Highest Transaction", f"{currency_sym}{_format_money(max_amount)} {currency}"),
+        ("Lowest Transaction", f"{currency_sym}{_format_money(min_amount)} {currency}"),
+    ]
+
+    for label, value in summary_rows:
+        p.setFont("Helvetica", 9)
+        p.drawString(label_x, y, label)
+        p.setFont("Helvetica-Bold", 9)
+        p.drawRightString(width - 55, y, value)
+        y -= 15
+
+    # ── Transaction Details Table ──
+    y -= 10
+    p.setFont("Helvetica-Bold", 11)
+    p.setFillColorRGB(0.15, 0.15, 0.15)
+    p.drawString(50, y, "TRANSACTION DETAILS")
+    y -= 5
+    p.setStrokeColorRGB(0.7, 0.7, 0.7)
+    p.line(50, y, width - 50, y)
+    y -= 5
+
+    # Table header
+    col_num = 50
+    col_date = 70
+    col_desc = 185
+    col_status = 410
+    col_amount = width - 55
+
+    def _draw_table_header(y_pos):
+        p.setFont("Helvetica-Bold", 8)
+        p.setFillColorRGB(0.2, 0.2, 0.2)
+        # Header background
+        p.setFillColorRGB(0.93, 0.93, 0.93)
+        p.rect(48, y_pos - 3, width - 96, 14, fill=True, stroke=False)
+        p.setFillColorRGB(0.15, 0.15, 0.15)
+        p.drawString(col_num, y_pos, "#")
+        p.drawString(col_date, y_pos, "Date & Time")
+        p.drawString(col_desc, y_pos, "Description")
+        p.drawString(col_status, y_pos, "Status")
+        p.drawRightString(col_amount, y_pos, "Amount")
+        p.setFillColorRGB(0, 0, 0)
+        return y_pos - 16
+
+    y = _draw_table_header(y)
+
+    for idx, entry in enumerate(entries, 1):
+        # Check if we need a new page
+        if y < 85:
+            p.showPage()
+            _draw_page_frame(p, is_continuation=True)
+            y = height - 120
+            y = _draw_table_header(y)
+
+        # Alternate row shading
+        if idx % 2 == 0:
+            p.setFillColorRGB(0.97, 0.97, 0.97)
+            p.rect(48, y - 4, width - 96, 28, fill=True, stroke=False)
+            p.setFillColorRGB(0, 0, 0)
+
+        p.setFont("Helvetica", 8)
+
+        # Row number
+        p.drawString(col_num, y, str(idx))
+
+        # Date
+        local_dt = entry.created_at
+        p.drawString(col_date, y, local_dt.strftime("%b %d, %Y"))
+        p.setFont("Helvetica", 7)
+        p.drawString(col_date, y - 10, local_dt.strftime("%I:%M %p UTC"))
+
+        # Description (truncated)
+        p.setFont("Helvetica", 8)
+        desc = entry.description or entry.kind
+        if len(desc) > 40:
+            desc = desc[:37] + "..."
+        p.drawString(col_desc, y, desc)
+
+        # Sub-detail line
+        sr = entry.service_request
+        sub_detail = ""
+        if sr:
+            sub_detail = f"Booking #{sr.id}"
+            if sr.user:
+                sub_detail += f" · @{sr.user.username}"
+        elif entry.payout:
+            sub_detail = f"Payout #{entry.payout.id} · {(entry.payout.method or '').title()}"
+        if sub_detail:
+            p.setFont("Helvetica", 7)
+            p.setFillColorRGB(0.4, 0.4, 0.4)
+            p.drawString(col_desc, y - 10, sub_detail[:50])
+            p.setFillColorRGB(0, 0, 0)
+
+        # Status badge
+        status_text = (entry.status or "").upper()
+        p.setFont("Helvetica-Bold", 7)
+        p.drawString(col_status, y, status_text)
+
+        # Amount
+        sign = "+" if entry.direction == "credit" else "-"
+        p.setFont("Helvetica-Bold", 9)
+        if entry.direction == "credit":
+            p.setFillColorRGB(0.0, 0.5, 0.0)
+        else:
+            p.setFillColorRGB(0.7, 0.0, 0.0)
+        amt_str = f"{sign} {currency_sym}{_format_money(entry.amount)}"
+        p.drawRightString(col_amount, y, amt_str)
+        p.setFillColorRGB(0, 0, 0)
+
+        y -= 28
+
+    # ── Totals row ──
+    if y < 85:
+        p.showPage()
+        _draw_page_frame(p, is_continuation=True)
+        y = height - 120
+
+    y -= 5
+    p.setStrokeColorRGB(0.3, 0.3, 0.3)
+    p.setLineWidth(1.2)
+    p.line(col_desc, y, width - 50, y)
+    y -= 16
+
+    p.setFont("Helvetica-Bold", 10)
+    p.drawString(col_desc, y, "TOTAL")
+    if net_total >= 0:
+        p.setFillColorRGB(0.0, 0.5, 0.0)
+    else:
+        p.setFillColorRGB(0.7, 0.0, 0.0)
+    p.drawRightString(col_amount, y, f"{currency_sym}{_format_money(net_total)} {currency}")
+    p.setFillColorRGB(0, 0, 0)
+
+    y -= 14
+    p.setFont("Helvetica", 8)
+    p.setFillColorRGB(0.4, 0.4, 0.4)
+    p.drawString(col_desc, y, f"({tx_count} transaction{'s' if tx_count != 1 else ''} in this report)")
+    p.setFillColorRGB(0, 0, 0)
+
+    # ── Notes Section ──
+    y -= 30
+    if y < 130:
+        p.showPage()
+        _draw_page_frame(p, is_continuation=True)
+        y = height - 120
+
+    p.setStrokeColorRGB(0.7, 0.7, 0.7)
+    p.line(50, y, width - 50, y)
+    y -= 16
+
+    p.setFont("Helvetica-Bold", 9)
+    p.drawString(50, y, "NOTES:")
+    y -= 14
+
+    notes = [
+        f"• All amounts displayed in {currency} ({_currency_full_name(currency)}).",
+        "• Transactions originally in other currencies were converted at the prevailing exchange rate.",
+        "• Platform commission (20%) has already been deducted from service earnings.",
+        "• Processing fees (Stripe/Flutterwave/Paystack) have been deducted where applicable.",
+        "• A 5% fee is applied to instant cashouts. Scheduled payouts have no additional fees.",
+        "• This is a system-generated document and does not require a signature.",
+    ]
+
+    p.setFont("Helvetica", 8)
+    for note in notes:
+        if y < 60:
+            break
+        p.drawString(55, y, note)
+        y -= 12
 
     p.showPage()
     p.save()
     buffer.seek(0)
 
     response = HttpResponse(buffer.getvalue(), content_type="application/pdf")
-    filename = f"styloria_earnings_{provider.user.username}_{period}.pdf"
+    safe_period = period.replace(" ", "_")
+    safe_cat = category.replace(" ", "_")
+    filename = f"styloria_earnings_{user.username}_{safe_period}_{safe_cat}.pdf"
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
-
     return response
+
+
+def _currency_full_name(code: str) -> str:
+    """Return a human-readable currency name."""
+    names = {
+        "USD": "US Dollar", "EUR": "Euro", "GBP": "British Pound", "GHS": "Ghanaian Cedi",
+        "NGN": "Nigerian Naira", "KES": "Kenyan Shilling", "ZAR": "South African Rand",
+        "XOF": "West African CFA Franc", "XAF": "Central African CFA Franc",
+        "CAD": "Canadian Dollar", "AUD": "Australian Dollar", "INR": "Indian Rupee",
+        "JPY": "Japanese Yen", "CNY": "Chinese Yuan", "BRL": "Brazilian Real",
+        "MXN": "Mexican Peso", "AED": "UAE Dirham", "SAR": "Saudi Riyal",
+        "CHF": "Swiss Franc", "SEK": "Swedish Krona", "NOK": "Norwegian Krone",
+        "TRY": "Turkish Lira", "EGP": "Egyptian Pound", "MAD": "Moroccan Dirham",
+        "ETB": "Ethiopian Birr", "TZS": "Tanzanian Shilling", "UGX": "Ugandan Shilling",
+        "RWF": "Rwandan Franc", "KRW": "South Korean Won", "SGD": "Singapore Dollar",
+        "MYR": "Malaysian Ringgit", "THB": "Thai Baht", "PHP": "Philippine Peso",
+        "IDR": "Indonesian Rupiah", "PKR": "Pakistani Rupee", "BDT": "Bangladeshi Taka",
+    }
+    return names.get(code.upper(), code)
 
 
 def _month_start(dt):

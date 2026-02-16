@@ -130,6 +130,7 @@ urlpatterns = [
 
     # Provider earnings
     path('api/providers/earnings/summary/', core_views.provider_earnings_summary, name='provider_earnings_summary'),
+    path('api/providers/earnings/transactions/', core_views.provider_earnings_transactions, name='provider_earnings_transactions'),
     path('api/providers/earnings/report/', core_views.provider_earnings_report_pdf, name='provider_earnings_report_pdf'),
 
 
