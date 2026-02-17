@@ -186,7 +186,15 @@ def is_provider_eligible_for_tier(provider, required_tier):
     }
     
     provider_level = tier_hierarchy.get(provider_tier, 1)
-    required_level = tier_hierarchy.get(required_tier, 1)
+    required_level = tier_hierarchy.get(required_tier)
+    
+    # Unknown tier → reject (fail closed, not open)
+    if required_level is None:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Unknown required_tier '{required_tier}' in eligibility check. Denying access."
+        )
+        return False
     
     return provider_level >= required_level
 
@@ -206,7 +214,15 @@ def is_provider_eligible_for_tier_and_service(provider, required_tier, service_t
     }
     
     provider_level = tier_hierarchy.get(provider_tier, 1)
-    required_level = tier_hierarchy.get(required_tier, 1)
+    required_level = tier_hierarchy.get(required_tier)
+    
+    # Unknown tier → reject (fail closed)
+    if required_level is None:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Unknown required_tier '{required_tier}' in service eligibility check. Denying access."
+        )
+        return False
     
     return provider_level >= required_level
 

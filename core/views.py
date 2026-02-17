@@ -2784,8 +2784,9 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
         nearby_jobs = []
 
         for job in candidates:
-            # Skip jobs the provider isn't eligible for
-            if job.selected_tier and not is_provider_eligible_for_tier(provider, job.selected_tier):
+            # Skip jobs the provider isn't eligible for (default to 'standard' if NULL)
+            effective_tier = job.selected_tier or 'standard'
+            if not is_provider_eligible_for_tier(provider, effective_tier):
                 continue
 
             user_location = (job.location_latitude, job.location_longitude)
@@ -3127,17 +3128,17 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
                     service_provider__isnull=True,
                 )
 
-                # ===== TIER ELIGIBILITY CHECK =====
-                if service_request.selected_tier:
-                    if not is_provider_eligible_for_tier(provider, service_request.selected_tier):
-                        provider_tier = get_provider_tier(provider)
-                        return Response({
-                            "detail": f"This is a {service_request.selected_tier.title()} tier job. Your current tier ({provider_tier.title()}) is not eligible.",
-                            "error_code": "tier_mismatch",
-                            "your_tier": provider_tier,
-                            "required_tier": service_request.selected_tier,
-                            "how_to_upgrade": "Complete your profile (bio, portfolio, certifications) to increase your tier."
-                        }, status=403)
+                # ===== TIER ELIGIBILITY CHECK (always enforced) =====
+                effective_tier = service_request.selected_tier or 'standard'
+                if not is_provider_eligible_for_tier(provider, effective_tier):
+                    provider_tier = get_provider_tier(provider)
+                    return Response({
+                        "detail": f"This is a {effective_tier.title()} tier job. Your current tier ({provider_tier.title()}) is not eligible.",
+                        "error_code": "tier_mismatch",
+                        "your_tier": provider_tier,
+                        "required_tier": effective_tier,
+                        "how_to_upgrade": "Complete your profile (bio, portfolio, certifications) to increase your tier."
+                    }, status=403)
 
 
                 # Prevent providers from accepting their own booking
@@ -3231,6 +3232,9 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
 
         # Get selected tier (required)
         selected_tier = request.data.get("selected_tier")
+        # Backward compatibility: normalize 'priority' → 'premium'
+        if selected_tier == "priority":
+            selected_tier = "premium"
         if selected_tier not in ['budget', 'standard', 'premium']:
             return Response({
                 "detail": "selected_tier is required and must be 'budget', 'standard', or 'premium'."
@@ -5317,6 +5321,21 @@ def create_payment(request):
     if amount_source <= 0:
         return Response({"error": "Amount must be positive"}, status=400)
 
+    # ═════════════════
+    # SAVE SELECTED TIER
+    # ═════════════════
+    selected_tier = (request.data.get("selected_tier") or "").strip().lower()
+    # Backward compatibility: normalize 'priority' → 'premium'
+    if selected_tier == "priority":
+        selected_tier = "premium"
+    if selected_tier in ("budget", "standard", "premium"):
+        service_request.selected_tier = selected_tier
+        service_request.save(update_fields=["selected_tier"])
+    elif not service_request.selected_tier:
+        # Default to 'standard' if nothing was set
+        service_request.selected_tier = "standard"
+        service_request.save(update_fields=["selected_tier"])
+
 
     # ═══════════════════════════════════════════════════════════════════
     # REFERRAL DISCOUNT CHECK
@@ -5852,6 +5871,21 @@ def create_flutterwave_checkout(request):
     if amount <= 0:
         return Response({"detail": "amount must be positive."}, status=400)
 
+    # ═════════════════
+    # SAVE SELECTED TIER
+    # ═════════════════
+    selected_tier = (request.data.get("selected_tier") or "").strip().lower()
+    if selected_tier == "priority":
+        selected_tier = "premium"
+    if selected_tier in ("budget", "standard", "premium"):
+        sr.selected_tier = selected_tier
+        sr.save(update_fields=["selected_tier"])
+    elif not sr.selected_tier:
+        # Default to 'standard' if nothing was set
+        sr.selected_tier = "standard"
+        sr.save(update_fields=["selected_tier"])
+
+
     # ═══════════════════════════════════════════════════════════════════
     # REFERRAL DISCOUNT CHECK
     # ═══════════════════════════════════════════════════════════════════
@@ -6283,6 +6317,21 @@ def create_paystack_checkout(request):
     
     if amount <= 0:
         return Response({"detail": "amount must be positive."}, status=400)
+
+    # ═════════════════
+    # SAVE SELECTED TIER
+    # ═════════════════
+    selected_tier = (request.data.get("selected_tier") or "").strip().lower()
+    if selected_tier == "priority":
+        selected_tier = "premium"
+    if selected_tier in ("budget", "standard", "premium"):
+        sr.selected_tier = selected_tier
+        sr.save(update_fields=["selected_tier"])
+    elif not sr.selected_tier:
+        # Default to 'standard' if nothing was set
+        sr.selected_tier = "standard"
+        sr.save(update_fields=["selected_tier"])
+
 
     # ═══════════════════════════════════════════════════════════════════
     # REFERRAL DISCOUNT CHECK
