@@ -1913,11 +1913,12 @@ class ChatMessage(models.Model):
 
 class SupportThread(models.Model):
     user = models.ForeignKey(
-        CustomUser,
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='support_threads',
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True) # New: To track open/closed status
 
     def __str__(self):
         return f"SupportThread for {self.user.username}"
@@ -1928,6 +1929,7 @@ class SupportMessage(models.Model):
         SupportThread,
         on_delete=models.CASCADE,
         related_name='messages',
+        null=True, blank=True # Allow NULL for generic system messages if needed
     )
     sender = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1935,6 +1937,7 @@ class SupportMessage(models.Model):
         related_name='support_messages',
     )
     content = models.TextField()
+    is_system_message = models.BooleanField(default=False) # New: For italic styling
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

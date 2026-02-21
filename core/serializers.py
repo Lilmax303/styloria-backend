@@ -1135,7 +1135,7 @@ class SupportMessageSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SupportMessage
-        fields = ["id", "sender", "content", "created_at"]
+        fields = ["id", "sender", "content", "created_at", "is_system_message"]
 
     def validate_content(self, value: str):
         email_pattern = re.compile(r"[\w\.-]+@[\w\.-]+\.\w+")
@@ -1147,7 +1147,11 @@ class SupportMessageSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         request = self.context["request"]
         thread = self.context["thread"]
-        return SupportMessage.objects.create(thread=thread, sender=request.user, content=validated_data["content"])
+        return SupportMessage.objects.create(
+            thread=self.context["thread"], 
+            sender=self.context["request"].user, 
+            content=validated_data["content"]
+        )
 
 class ProviderWalletSerializer(serializers.ModelSerializer):
     # Add computed field for instant cashout button state

@@ -4853,7 +4853,21 @@ class SupportThreadViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated])
     def my_thread(self, request):
-        thread, _ = SupportThread.objects.get_or_create(user=request.user)
+        thread, created = SupportThread.objects.get_or_create(user=request.user)
+
+        if created:
+            welcome_text = (
+                "Hello! Welcome to Styloria Support. We appreciate you reaching out. "
+                "A support specialist has been notified and will be with you shortly "
+                "(typically within 5-10 minutes). How can we help you today?"
+            )
+            SupportMessage.objects.create(
+                thread=thread,
+                sender=None, # None indicates System
+                content=welcome_text,
+                is_system_message=True
+            )
+
         serializer = self.get_serializer(thread)
         return Response(serializer.data)
 

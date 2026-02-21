@@ -351,61 +351,25 @@ class ChatMessageAdmin(admin.ModelAdmin):
 class SupportMessageInline(admin.TabularInline):
     """Inline display of messages within a thread"""
     model = SupportMessage
-    extra = 0
-    readonly_fields = ['sender', 'content', 'created_at', 'message_preview']
-    fields = ['sender', 'message_preview', 'created_at']
+    extra = 1 # Allow adding 1 new message by default
+    # Remove 'readonly_fields' for content so you can type
+    readonly_fields = ['sender', 'created_at', 'is_system_message']
+    fields = ['sender', 'content', 'created_at']
     ordering = ['created_at']
     can_delete = False
-    max_num = 0
 
-    def message_preview(self, obj):
-        content = obj.content or ''
-        if len(content) > 100:
-            content = content[:100] + '...'
-        
-        is_support = obj.sender.is_staff if obj.sender else False
-        if is_support:
-            return format_html(
-                '<div style="background: #dbeafe; padding: 8px; border-radius: 4px; '
-                'border-left: 3px solid #3b82f6;">'
-                '<strong>Support:</strong> {}</div>',
-                content
-            )
-        else:
-            return format_html(
-                '<div style="background: #f3f4f6; padding: 8px; border-radius: 4px; '
-                'border-left: 3px solid #6b7280;">{}</div>',
-                content
-            )
-    message_preview.short_description = "Message"
 
+    # FIX THE BUG: Allow adding permissions
     def has_add_permission(self, request, obj=None):
-        return False
+        return True
 
 
 @admin.register(SupportThread)
 class SupportThreadAdmin(admin.ModelAdmin):
     list_display = [
-        'id',
-        'user_display',
-        'user_email',
-        'status_display',
-        'message_count',
-        'last_message_preview',
-        'last_activity',
-        'created_at',
-        'reply_button',
+        'id', 'user_display', 'status_display', 'is_active', 'created_at', 'close_thread_button'
     ]
-    list_filter = ['created_at']
-    search_fields = [
-        'user__username',
-        'user__email',
-        'user__first_name',
-        'user__last_name',
-        'messages__content',
-    ]
-    ordering = ['-created_at']
-    readonly_fields = ['user', 'created_at', 'conversation_display']
+    readonly_fields = ['user', 'created_at']
     inlines = [SupportMessageInline]
     list_per_page = 25
 
@@ -417,6 +381,50 @@ class SupportThreadAdmin(admin.ModelAdmin):
             'fields': ('conversation_display',),
         }),
     )
+
+    # 1. Auto-assign the Admin as the sender when replying
+    def save_formset(self, request, form, formset, change):
+        instances = formset.save(commit=False)
+        for instance in instances:
+            if isinstance(instance, SupportMessage):
+                if not instance.pk and not instance.sender:
+                    instance.sender = request.user
+            instance.save()
+        formset.save_m2m()
+
+    # 2. Custom Action: Close Thread & Send Exit Message
+    def close_thread_button(self, obj):
+        if not obj.is_active:
+            return "Closed"
+        return format_html(
+            '<a class="button" style="background: #ef4444; color: white;" href="{}">End Chat & Close</a>',
+            reverse('admin:close-support-thread', args=[obj.pk])
+        )
+    close_thread_button.short_description = "Actions"
+
+    # 3. Handling the URL for closing (You need to add this to your main urls.py or handle via admin actions)
+    # Alternatively, use a standard Django Admin Action:
+    actions = ['close_selected_threads']
+
+    @admin.action(description='Close selected threads and send exit message')
+    def close_selected_threads(self, request, queryset):
+        exit_msg = (
+            "This support thread has been marked as resolved by our team. "
+            "If you need further assistance, please don't hesitate to reach out again. "
+            "Thank you for choosing Styloria!"
+        )
+        for thread in queryset:
+            if thread.is_active:
+                # Send the message
+                SupportMessage.objects.create(
+                    thread=thread,
+                    sender=request.user, # Or None for System
+                    content=exit_msg,
+                    is_system_message=True
+                )
+                # Close thread
+                thread.is_active = False
+                thread.save()
 
     def user_display(self, obj):
         user = obj.user
