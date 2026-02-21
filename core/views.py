@@ -138,6 +138,7 @@ from .serializers import (
     ServiceProviderSerializer,
     ServiceRequestSerializer,
     SupportMessageSerializer,
+    SupportRatingSerializer,
     SupportThreadSerializer,
     UserLocationCodesSerializer,
     UserSerializer,
