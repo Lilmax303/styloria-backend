@@ -371,7 +371,7 @@ class SupportThreadAdmin(admin.ModelAdmin):
     list_display = [
         'id', 'user_display', 'status_display', 'is_active', 'created_at', 'close_thread_button'
     ]
-    readonly_fields = ['user', 'created_at']
+    readonly_fields = ['user', 'created_at', 'conversation_display']
     inlines = [SupportMessageInline]
     list_per_page = 25
 
