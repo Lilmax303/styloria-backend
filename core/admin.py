@@ -369,11 +369,14 @@ class SupportMessageInline(admin.TabularInline):
 @admin.register(SupportThread)
 class SupportThreadAdmin(admin.ModelAdmin):
     list_display = [
-        'id', 'user_display', 'status_display', 'is_active', 'created_at', 'close_thread_button'
+        'id', 'user_display', 'status_display', 'is_active', 'rating_display', 'created_at', 'close_thread_button'
     ]
-    readonly_fields = ['user', 'created_at', 'conversation_display']
+    readonly_fields = ['user', 'created_at', 'conversation_display', 'rating', 'rating_comment', 'rated_at']
     inlines = [SupportMessageInline]
     list_per_page = 25
+    list_filter = ['is_active', 'created_at', 'rating']
+    search_fields = ['user__username', 'user__first_name', 'user__last_name', 'user__email']
+    ordering = ['-created_at']
 
     def get_urls(self):
         from django.urls import path
@@ -413,6 +416,10 @@ class SupportThreadAdmin(admin.ModelAdmin):
         }),
         ('Conversation', {
             'fields': ('conversation_display',),
+        }),
+        ('Customer Feedback', {
+            'fields': ('rating', 'rating_comment', 'rated_at'),
+            'description': 'Rating and feedback submitted by the customer after the conversation ended.',
         }),
     )
 
@@ -472,6 +479,7 @@ class SupportThreadAdmin(admin.ModelAdmin):
         return obj.user.email
     user_email.short_description = "Email"
 
+
     def status_display(self, obj):
         last_staff_msg = obj.messages.filter(sender__is_staff=True).order_by('-created_at').first()
         last_user_msg = obj.messages.filter(sender__is_staff=False).order_by('-created_at').first()
@@ -500,6 +508,7 @@ class SupportThreadAdmin(admin.ModelAdmin):
         return format_html('<span style="font-weight: bold;">{}</span>', count)
     message_count.short_description = "Messages"
 
+
     def last_message_preview(self, obj):
         last_msg = obj.messages.order_by('-created_at').first()
         if last_msg:
@@ -514,12 +523,14 @@ class SupportThreadAdmin(admin.ModelAdmin):
         return '-'
     last_message_preview.short_description = "Last Message"
 
+
     def last_activity(self, obj):
         last_msg = obj.messages.order_by('-created_at').first()
         if last_msg:
             return last_msg.created_at.strftime("%Y-%m-%d %H:%M")
         return obj.created_at.strftime("%Y-%m-%d %H:%M")
     last_activity.short_description = "Last Activity"
+
 
     def reply_button(self, obj):
         return format_html(
@@ -528,6 +539,7 @@ class SupportThreadAdmin(admin.ModelAdmin):
             reverse('admin:core_supportthread_change', args=[obj.pk])
         )
     reply_button.short_description = "Action"
+
 
     def conversation_display(self, obj):
         """Display the full conversation in a chat-like format"""
@@ -577,6 +589,42 @@ class SupportThreadAdmin(admin.ModelAdmin):
         
         return format_html(''.join(html_parts))
     conversation_display.short_description = "Conversation"
+
+
+    def rating_display(self, obj):
+        if obj.rating is None:
+            if obj.is_active:
+                return format_html(
+                    '<span style="color: #9ca3af; font-style: italic;">Active</span>'
+                )
+            return format_html(
+                '<span style="color: #9ca3af; font-style: italic;">No rating yet</span>'
+            )
+
+        stars = '⭐' * obj.rating + '☆' * (5 - obj.rating)
+        color_map = {
+            1: '#ef4444',  # red
+            2: '#f97316',  # orange
+            3: '#eab308',  # yellow
+            4: '#22c55e',  # green
+            5: '#16a34a',  # dark green
+        }
+        color = color_map.get(obj.rating, '#6b7280')
+
+        comment_preview = ''
+        if obj.rating_comment:
+            truncated = obj.rating_comment[:40] + '...' if len(obj.rating_comment) > 40 else obj.rating_comment
+            comment_preview = f'<br><span style="font-size: 11px; color: #6b7280;">💬 {truncated}</span>'
+
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{} ({}/5)</span>{}',
+            color,
+            stars,
+            obj.rating,
+            format_html(comment_preview) if comment_preview else '',
+        )
+    rating_display.short_description = "Rating"
+    rating_display.admin_order_field = 'rating'
 
 
 @admin.register(SupportMessage)
