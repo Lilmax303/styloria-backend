@@ -4849,11 +4849,27 @@ class SupportThreadViewSet(viewsets.ModelViewSet):
         return SupportThread.objects.filter(user=user).select_related("user").order_by("-id")
 
     def create(self, request, *args, **kwargs):
-        return Response({"detail": "Use /api/support_chats/my_thread/ to access your support chat."}, status=405)
+        return Response(
+            {"detail": "Use /api/support_chats/my_thread/ to access your support chat."}, 
+            status=405,
+        )
 
     @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated])
     def my_thread(self, request):
-        thread, created = SupportThread.objects.get_or_create(user=request.user)
+        """
+        Get or create an ACTIVE thread for the user.
+        If all existing threads are closed, create a new one.
+        """
+        # Try to find an existing active thread
+        thread = SupportThread.objects.filter(
+            user=request.user, is_active=True
+        ).order_by("-id").first()
+
+        created = False
+        if thread is None:
+            # No active thread — create a new one
+            thread = SupportThread.objects.create(user=request.user, is_active=True)
+            created = True
 
         if created:
             welcome_text = (
@@ -4880,9 +4896,21 @@ class SupportThreadViewSet(viewsets.ModelViewSet):
             return Response({"detail": "You are not allowed to access this chat."}, status=403)
 
         if request.method == "GET":
+            # Support polling: only return messages after a given timestamp
+            since = request.query_params.get("since")
             qs = SupportMessage.objects.filter(thread=thread).select_related("sender").order_by("created_at")
+            if since:
+                qs = qs.filter(created_at__gt=since)
             serializer = SupportMessageSerializer(qs, many=True)
             return Response(serializer.data)
+
+        # POST — send a message
+        # Don't allow posting to closed threads
+        if not thread.is_active:
+            return Response(
+                {"detail": "This thread is closed. Please start a new support chat."},
+                status=400,
+            )
 
         content = request.data.get("content", "")
         serializer = SupportMessageSerializer(
@@ -4892,6 +4920,31 @@ class SupportThreadViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         msg = serializer.save()
         return Response(SupportMessageSerializer(msg).data, status=201)
+
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
+    def rate(self, request, pk=None):
+        """Rate a closed support thread."""
+        thread = self.get_object()
+
+        if thread.user != request.user:
+            return Response({"detail": "Not your thread."}, status=403)
+
+        if thread.is_active:
+            return Response({"detail": "Cannot rate an active thread."}, status=400)
+
+        if thread.rating is not None:
+            return Response({"detail": "You have already rated this thread."}, status=400)
+
+        serializer = SupportRatingSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        thread.rating = serializer.validated_data["rating"]
+        thread.rating_comment = serializer.validated_data.get("comment", "")
+        thread.rated_at = timezone.now()
+        thread.save()
+
+        return Response({"detail": "Thank you for your feedback!"}, status=200)
 
 
 # -------------------------

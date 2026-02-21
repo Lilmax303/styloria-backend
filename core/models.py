@@ -1919,6 +1919,9 @@ class SupportThread(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True) # New: To track open/closed status
+    rating = models.PositiveSmallIntegerField(null=True, blank=True)  # 1-5 stars
+    rating_comment = models.TextField(null=True, blank=True)
+    rated_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"SupportThread for {self.user.username}"
@@ -1935,13 +1938,16 @@ class SupportMessage(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='support_messages',
+        null=True,
+        blank=True,
     )
     content = models.TextField()
     is_system_message = models.BooleanField(default=False) # New: For italic styling
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"SupportMsg #{self.id} in thread {self.thread_id} by {self.sender}"
+        sender_name = self.sender.username if self.sender else "System"
+        return f"SupportMsg #{self.id} in thread {self.thread_id} by {sender_name}"
 
 
 class LocationUpdate(models.Model):

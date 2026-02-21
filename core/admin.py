@@ -398,7 +398,7 @@ class SupportThreadAdmin(admin.ModelAdmin):
             )
             SupportMessage.objects.create(
                 thread=thread,
-                sender=request.user,
+                sender=None,
                 content=exit_msg,
                 is_system_message=True,
             )
@@ -452,7 +452,7 @@ class SupportThreadAdmin(admin.ModelAdmin):
                 # Send the message
                 SupportMessage.objects.create(
                     thread=thread,
-                    sender=request.user, # Or None for System
+                    sender=None,
                     content=exit_msg,
                     is_system_message=True
                 )
@@ -504,7 +504,12 @@ class SupportThreadAdmin(admin.ModelAdmin):
         last_msg = obj.messages.order_by('-created_at').first()
         if last_msg:
             content = last_msg.content[:50] + '...' if len(last_msg.content) > 50 else last_msg.content
-            sender_name = "Support" if last_msg.sender.is_staff else "Customer"
+            if last_msg.sender is None:
+                sender_name = "System"
+            elif last_msg.sender.is_staff:
+                sender_name = "Support"
+            else:
+                sender_name = "Customer"
             return f"{sender_name}: {content}"
         return '-'
     last_message_preview.short_description = "Last Message"

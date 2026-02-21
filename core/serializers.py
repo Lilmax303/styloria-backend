@@ -1127,11 +1127,11 @@ class SupportThreadSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SupportThread
-        fields = ["id", "user", "created_at"]
+        fields = ["id", "user", "created_at", "is_active", "rating", "rating_comment"]
 
 
 class SupportMessageSerializer(serializers.ModelSerializer):
-    sender = UserSerializer(read_only=True)
+    sender = UserSerializer(read_only=True, allow_null=True)
 
     class Meta:
         model = SupportMessage
@@ -1141,17 +1141,23 @@ class SupportMessageSerializer(serializers.ModelSerializer):
         email_pattern = re.compile(r"[\w\.-]+@[\w\.-]+\.\w+")
         phone_pattern = re.compile(r"(\+?\d[\d \-\(\)]{7,}\d)")
         if email_pattern.search(value) or phone_pattern.search(value):
-            raise serializers.ValidationError("Sharing phone numbers or email addresses is not allowed in chat.")
+            raise serializers.ValidationError(
+                "Sharing phone numbers or email addresses is not allowed in chat."
+            )
         return value
 
     def create(self, validated_data):
-        request = self.context["request"]
-        thread = self.context["thread"]
         return SupportMessage.objects.create(
-            thread=self.context["thread"], 
-            sender=self.context["request"].user, 
-            content=validated_data["content"]
+            thread=self.context["thread"],
+            sender=self.context["request"].user,
+            content=validated_data["content"],
         )
+
+
+class SupportRatingSerializer(serializers.Serializer):
+    rating = serializers.IntegerField(min_value=1, max_value=5)
+    comment = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+
 
 class ProviderWalletSerializer(serializers.ModelSerializer):
     # Add computed field for instant cashout button state
