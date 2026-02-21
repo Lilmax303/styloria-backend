@@ -22,6 +22,88 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 
 
 
+
+# ═══════════════════════════════════════════════════════════════════
+# REFERRAL CODE GENERATION SYSTEM
+# ═══════════════════════════════════════════════════════════════════
+
+# Confusable-free charset: 32 characters
+# Excludes 0/O (zero/oh) and 1/I (one/eye) to prevent user typos
+REFERRAL_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+REFERRAL_CHARSET_SIZE = 32  # len(REFERRAL_CHARSET)
+
+
+def _get_referral_secret():
+    """Get the HMAC secret key for referral code generation."""
+    from django.conf import settings as _settings
+    return getattr(_settings, 'REFERRAL_CODE_SECRET', _settings.SECRET_KEY).encode('utf-8')
+
+
+def normalize_referral_code(code):
+    """
+    Normalize referral code input for DB lookup.
+    
+    Handles:
+    - New format: "9U8T-K4NW-P7LH" or "9U8TK4NWP7LH" → "9U8T-K4NW-P7LH"
+    - Old format: "STYLORIA-USERNAME" → "STYLORIA-USERNAME" (passthrough)
+    - Mixed case, extra spaces, etc.
+    
+    Returns the normalized string suitable for DB comparison.
+    """
+    if not code:
+        return ''
+
+    raw = code.strip().upper()
+
+    # Strip dashes, spaces, underscores for length analysis
+    cleaned = ''.join(c for c in raw if c.isalnum())
+
+    # If exactly 12 alphanumeric chars → new-format code, re-insert dashes
+    if len(cleaned) == 12 and cleaned.isalnum():
+        return f"{cleaned[:4]}-{cleaned[4:8]}-{cleaned[8:12]}"
+
+    # Otherwise return uppercased raw input (handles old STYLORIA-USERNAME format)
+    return raw
+
+
+def lookup_user_by_referral_code(code):
+    """
+    Look up a CustomUser by referral code.
+    Handles both new format (XXXX-XXXX-XXXX) and legacy (STYLORIA-USERNAME).
+    
+    Returns CustomUser instance.
+    Raises CustomUser.DoesNotExist if no match found.
+    """
+    if not code or not code.strip():
+        raise CustomUser.DoesNotExist("Empty referral code")
+
+    normalized = normalize_referral_code(code)
+
+    # 1. Exact match on normalized form
+    try:
+        return CustomUser.objects.get(referral_code=normalized)
+    except CustomUser.DoesNotExist:
+        pass
+
+    # 2. Case-insensitive match on normalized form
+    try:
+        return CustomUser.objects.get(referral_code__iexact=normalized)
+    except CustomUser.DoesNotExist:
+        pass
+
+    # 3. Fallback: try raw input (transition period — old STYLORIA-USERNAME codes)
+    raw = code.strip().upper()
+    if raw != normalized:
+        try:
+            return CustomUser.objects.get(referral_code__iexact=raw)
+        except CustomUser.DoesNotExist:
+            pass
+
+    # Nothing found
+    raise CustomUser.DoesNotExist(f"No user with referral code: {code}")
+
+
+
 # =============================================================================
 # FILE VALIDATORS
 # =============================================================================
@@ -337,21 +419,123 @@ class CustomUser(AbstractUser):
     )
     
     def generate_referral_code(self):
-        """Generate unique referral code based on username."""
-        import random
-        import string
-        base = f"STYLORIA-{self.username}".upper()
-        # If collision, add random suffix
-        if CustomUser.objects.filter(referral_code=base).exists():
-            suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-            base = f"{base}-{suffix}"
-        return base
+        """
+        Generate a cryptographically-derived, hard-to-guess referral code.
     
-    def save(self, *args, **kwargs):
-        # Auto-generate referral code on first save
-        if not self.referral_code and self.username:
-            self.referral_code = self.generate_referral_code()
-        super().save(*args, **kwargs)
+        Format: XXXX-XXXX-XXXX (12 meaningful chars, displayed with dashes)
+    
+        Components baked in (but invisible after HMAC transformation):
+        ─────────────────────────────────────────────────────────────
+        Segment A (chars 0-3): User's first_name reversed, shifted by HMAC bytes
+        Segment B (chars 4-7): Birth year, XOR'd with HMAC bytes, base-32 encoded
+        Segment C (chars 8-11): Pure HMAC-SHA256 cryptographic noise
+    
+        Uses HMAC-SHA256 so even knowing the algorithm + user data, you can't
+        reproduce the code without the server-side secret key.
+        """
+        import hashlib
+        import hmac
+        import random
+        import string as _string
+
+        secret = _get_referral_secret()
+
+        # ── Build HMAC message from multiple user attributes ──
+        # More inputs = more entropy = harder to guess
+        first_name = (self.first_name or '').strip().upper()
+        username = (self.username or '').strip().lower()
+        email = (self.email or '').strip().lower()
+        phone = (self.phone_number or '').strip()
+
+        # Birth year (or 0000 if missing)
+        birth_year = self.date_of_birth.year if self.date_of_birth else 0
+
+        # Reversed first name (core requirement)
+        reversed_name = first_name[::-1] if first_name else 'ANON'
+
+        # Build the HMAC message — order matters, pipe-separated
+        # Include pk if available (for existing users being migrated)
+        pk_str = str(self.pk) if self.pk else 'new'
+
+        hmac_message = f"{username}|{reversed_name}|{birth_year}|{email}|{phone}|{pk_str}"
+
+        # ── Compute HMAC-SHA256 ──
+        hmac_digest = hmac.new(
+            secret,
+            hmac_message.encode('utf-8'),
+            hashlib.sha256
+        ).digest()  # 32 bytes
+
+        # ── Segment A: Reversed first name shifted by HMAC bytes ──
+        # Take first 4 chars of reversed name (pad with 'X' if short)
+        padded_name = (reversed_name + 'XXXX')[:4]
+        seg_a = ''
+        for i in range(4):
+            char_val = ord(padded_name[i]) if padded_name[i].isalpha() else hmac_digest[i]
+            shift = hmac_digest[i]  # byte 0-3
+            idx = (char_val + shift) % REFERRAL_CHARSET_SIZE
+            seg_a += REFERRAL_CHARSET[idx]
+
+        # ── Segment B: Birth year XOR'd with HMAC bytes, mapped to charset ──
+        year_bytes = birth_year.to_bytes(4, 'big')  # e.g., 1995 → [0, 0, 7, 203]
+        seg_b = ''
+        for i in range(4):
+            xor_val = year_bytes[i] ^ hmac_digest[4 + i]  # bytes 4-7
+            idx = xor_val % REFERRAL_CHARSET_SIZE
+            seg_b += REFERRAL_CHARSET[idx]
+
+        # ── Segment C: Pure HMAC cryptographic noise ──
+        seg_c = ''
+        for i in range(4):
+            idx = hmac_digest[8 + i] % REFERRAL_CHARSET_SIZE  # bytes 8-11
+            seg_c += REFERRAL_CHARSET[idx]
+
+        code = f"{seg_a}-{seg_b}-{seg_c}"
+
+        # ── Collision check with retry ──
+        # Extremely unlikely (1 in ~1.15×10¹⁸) but we handle it
+        qs = CustomUser.objects.filter(referral_code=code)
+        if self.pk:
+            qs = qs.exclude(pk=self.pk)
+
+        attempt = 0
+        while qs.exists() and attempt < 10:
+            # Add random salt to HMAC message and recompute
+            salt = ''.join(random.choices(_string.ascii_letters + _string.digits, k=8))
+            salted_message = f"{hmac_message}|salt:{salt}|attempt:{attempt}"
+            hmac_digest = hmac.new(
+                secret,
+                salted_message.encode('utf-8'),
+                hashlib.sha256
+            ).digest()
+
+            # Recompute all segments with new digest
+            seg_a = ''
+            for i in range(4):
+                char_val = ord(padded_name[i]) if padded_name[i].isalpha() else hmac_digest[i]
+                shift = hmac_digest[i]
+                idx = (char_val + shift) % REFERRAL_CHARSET_SIZE
+                seg_a += REFERRAL_CHARSET[idx]
+
+            seg_b = ''
+            for i in range(4):
+                xor_val = year_bytes[i] ^ hmac_digest[4 + i]
+                idx = xor_val % REFERRAL_CHARSET_SIZE
+                seg_b += REFERRAL_CHARSET[idx]
+
+            seg_c = ''
+            for i in range(4):
+                idx = hmac_digest[8 + i] % REFERRAL_CHARSET_SIZE
+                seg_c += REFERRAL_CHARSET[idx]
+
+            code = f"{seg_a}-{seg_b}-{seg_c}"
+
+            qs = CustomUser.objects.filter(referral_code=code)
+            if self.pk:
+                qs = qs.exclude(pk=self.pk)
+            attempt += 1
+
+        return code
 
 
     def __str__(self):
@@ -485,6 +669,14 @@ class CustomUser(AbstractUser):
         if self.phone_number == "":
             self.phone_number = None
 
+        # ── Generate referral code ──
+        # Must have first_name + date_of_birth for the new algorithm.
+        # For users created without these (e.g., superusers), we defer generation
+        # until the fields are populated.
+        if not self.referral_code:
+            if (self.first_name or '').strip() and self.username:
+                self.referral_code = self.generate_referral_code()
+
         # accepted_terms timestamp
         if self.accepted_terms and self.accepted_terms_at is None:
             self.accepted_terms_at = timezone.now()
@@ -529,6 +721,16 @@ class CustomUser(AbstractUser):
             self.full_clean()
             with transaction.atomic():
                 self._assign_membership_and_styloria_id()
+
+        # Generate ID if possible
+        if not self.styloria_id and self.has_required_fields_for_styloria_id():
+            self.full_clean()
+            with transaction.atomic():
+                self._assign_membership_and_styloria_id()
+                # ── Also generate referral code if not yet set ──
+                if not self.referral_code:
+                    self.referral_code = self.generate_referral_code()
+
                 return super().save(*args, **kwargs)
 
 

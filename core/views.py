@@ -119,6 +119,8 @@ from .models import (
     ProviderCertification,
     RequesterReview,
     ServiceProviderPricing,
+    lookup_user_by_referral_code, 
+    normalize_referral_code,
     SERVICE_TYPE_CHOICES,
     CERTIFICATION_REQUIRED_SERVICES,
     ServiceRequest,
@@ -1721,12 +1723,41 @@ class UserViewSet(viewsets.ModelViewSet):
             )
 
         # ========== HANDLE REFERRAL CODE ==========
-        referral_code = (request.data.get('referral_code') or '').strip().upper()
+        referral_code = (request.data.get('referral_code') or '').strip()
     
         if referral_code:
             try:
-                # Find referrer by code
-                referrer = CustomUser.objects.get(referral_code__iexact=referral_code)
+                # Find referrer using the normalized lookup helper
+                referrer = lookup_user_by_referral_code(referral_code)
+             
+                # Prevent self-referral
+                if referrer.id != user.id:
+                    # Link new user to referrer
+                    user.referred_by = referrer
+                    user.save(update_fields=['referred_by'])
+                
+                    # Create pending Referral record
+                    Referral.objects.create(
+                        referrer=referrer,
+                        referred_user=user,
+                        status='pending',
+                        credits_amount=5,
+                        credits_awarded=False,
+                    )
+                
+                    # Notify referrer
+                    try:
+                        send_websocket_notification(
+                            referrer,
+                            f"🎉 {user.first_name or user.username} just signed up using your referral code! "
+                            f"You'll earn 5 discount credits when they complete their first booking.",
+                            notification_type="referral_signup"
+                        )
+                    except Exception:
+                        pass
+                    
+            except CustomUser.DoesNotExist:
+                pass  # Invalid code - ignore (don't block registration)
              
                 # Prevent self-referral
                 if referrer.id != user.id:
@@ -6847,13 +6878,11 @@ def validate_referral_code(request):
     Validate a referral code before registration.
     
     POST /api/referral/validate/
-    Body: { "code": "JOHN1X2K" }
+    Body: { "code": "9U8T-K4NW-P7LH" }
     
-    Returns:
-    {
-        "valid": true,
-        "referrer_first_name": "John"
-    }
+    Accepts both:
+    - New format: "9U8T-K4NW-P7LH" or "9U8TK4NWP7LH"
+    - Legacy format: "STYLORIA-USERNAME"
     """
     code = (request.data.get("code") or "").strip().upper()
     
@@ -6861,7 +6890,7 @@ def validate_referral_code(request):
         return Response({"valid": False, "detail": "Code is required."}, status=400)
     
     try:
-        referrer = CustomUser.objects.get(referral_code__iexact=code)
+        referrer = lookup_user_by_referral_code(code)
         return Response({
             "valid": True,
             "referrer_first_name": referrer.first_name or referrer.username,

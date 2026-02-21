@@ -28,6 +28,7 @@ from .models import (
     Payout,
     ProviderPayoutSettings,
     Referral,
+    lookup_user_by_referral_code,
     SERVICE_TYPE_CHOICES,  # ← NEW: Import for validation
 )
 
@@ -268,7 +269,19 @@ class UserSerializer(serializers.ModelSerializer):
         # Process referral if code was provided
         if referred_by_code:
             try:
-                referrer = CustomUser.objects.get(referral_code__iexact=referred_by_code)
+                referrer = lookup_user_by_referral_code(referred_by_code)
+                if referrer.pk != user.pk:  # Can't refer yourself
+                    user.referred_by = referrer
+                    user.save(update_fields=['referred_by'])
+                    
+                    # Create referral record
+                    Referral.objects.create(
+                        referrer=referrer,
+                        referred_user=user,
+                        status='pending'
+                    )
+            except CustomUser.DoesNotExist:
+                pass  # Invalid code - silently ignore
                 if referrer.pk != user.pk:  # Can't refer yourself
                     user.referred_by = referrer
                     user.save(update_fields=['referred_by'])
