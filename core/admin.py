@@ -533,7 +533,7 @@ class SupportThreadAdmin(admin.ModelAdmin):
         
         for msg in messages_qs:
             is_staff = msg.sender.is_staff if msg.sender else False
-            sender_name = msg.sender.get_full_name() or msg.sender.username if msg.sender else "Unknown"
+            sender_name = (msg.sender.get_full_name() or msg.sender.username) if msg.sender else "System"
             timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M")
             
             if is_staff:
@@ -591,6 +591,8 @@ class SupportMessageAdmin(admin.ModelAdmin):
     thread_link.short_description = "Thread"
 
     def sender_display(self, obj):
+        if obj.sender is None:
+            return format_html('<span style="color: #6b7280;">🤖 System</span>')
         if obj.sender.is_staff:
             return format_html('<span style="color: #3b82f6;">👤 {} (Staff)</span>', obj.sender.username)
         return format_html('<span>👤 {}</span>', obj.sender.username)
