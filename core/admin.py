@@ -3,6 +3,8 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.utils import timezone
+from django.urls import path
+from django.http import HttpResponseRedirect
 from django.utils.translation import gettext_lazy as _
 from core.models import PasswordResetCode
 from core.models import RequesterReview
@@ -373,6 +375,38 @@ class SupportThreadAdmin(admin.ModelAdmin):
     inlines = [SupportMessageInline]
     list_per_page = 25
 
+    def get_urls(self):
+        from django.urls import path
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                '<int:thread_id>/close/',
+                self.admin_site.admin_view(self.close_thread_view),
+                name='close-support-thread',
+            ),
+        ]
+        return custom_urls + urls
+
+    def close_thread_view(self, request, thread_id):
+        from django.http import HttpResponseRedirect
+        thread = self.get_object(request, thread_id)
+        if thread and thread.is_active:
+            exit_msg = (
+                "This support thread has been marked as resolved by our team. "
+                "If you need further assistance, please don't hesitate to reach out again. "
+                "Thank you for choosing Styloria!"
+            )
+            SupportMessage.objects.create(
+                thread=thread,
+                sender=request.user,
+                content=exit_msg,
+                is_system_message=True,
+            )
+            thread.is_active = False
+            thread.save()
+            self.message_user(request, f"Thread #{thread_id} has been closed.")
+        return HttpResponseRedirect(reverse('admin:core_supportthread_changelist'))
+
     fieldsets = (
         ('Thread Info', {
             'fields': ('user', 'created_at'),
@@ -425,6 +459,119 @@ class SupportThreadAdmin(admin.ModelAdmin):
                 # Close thread
                 thread.is_active = False
                 thread.save()
+
+    def user_display(self, obj):
+        user = obj.user
+        name = f"{user.first_name} {user.last_name}".strip()
+        display_name = name if name else user.username
+        return format_html('<strong>{}</strong>', display_name)
+    user_display.short_description = "Customer"
+    user_display.admin_order_field = 'user__first_name'
+
+    def user_email(self, obj):
+        return obj.user.email
+    user_email.short_description = "Email"
+
+    def status_display(self, obj):
+        last_staff_msg = obj.messages.filter(sender__is_staff=True).order_by('-created_at').first()
+        last_user_msg = obj.messages.filter(sender__is_staff=False).order_by('-created_at').first()
+        
+        if last_user_msg:
+            if not last_staff_msg or last_user_msg.created_at > last_staff_msg.created_at:
+                return format_html(
+                    '<span style="background: #fef3c7; color: #92400e; padding: 3px 8px; '
+                    'border-radius: 4px; font-weight: bold;">⚠ Needs Reply</span>'
+                )
+        
+        if last_staff_msg:
+            return format_html(
+                '<span style="background: #d1fae5; color: #065f46; padding: 3px 8px; '
+                'border-radius: 4px;">✓ Replied</span>'
+            )
+        
+        return format_html(
+            '<span style="background: #fee2e2; color: #991b1b; padding: 3px 8px; '
+            'border-radius: 4px;">New</span>'
+        )
+    status_display.short_description = "Status"
+
+    def message_count(self, obj):
+        count = obj.messages.count()
+        return format_html('<span style="font-weight: bold;">{}</span>', count)
+    message_count.short_description = "Messages"
+
+    def last_message_preview(self, obj):
+        last_msg = obj.messages.order_by('-created_at').first()
+        if last_msg:
+            content = last_msg.content[:50] + '...' if len(last_msg.content) > 50 else last_msg.content
+            sender_name = "Support" if last_msg.sender.is_staff else "Customer"
+            return f"{sender_name}: {content}"
+        return '-'
+    last_message_preview.short_description = "Last Message"
+
+    def last_activity(self, obj):
+        last_msg = obj.messages.order_by('-created_at').first()
+        if last_msg:
+            return last_msg.created_at.strftime("%Y-%m-%d %H:%M")
+        return obj.created_at.strftime("%Y-%m-%d %H:%M")
+    last_activity.short_description = "Last Activity"
+
+    def reply_button(self, obj):
+        return format_html(
+            '<a class="button" style="background: #3b82f6; color: white; padding: 6px 12px; '
+            'border-radius: 4px; text-decoration: none;" href="{}">💬 View & Reply</a>',
+            reverse('admin:core_supportthread_change', args=[obj.pk])
+        )
+    reply_button.short_description = "Action"
+
+    def conversation_display(self, obj):
+        """Display the full conversation in a chat-like format"""
+        messages_qs = obj.messages.select_related('sender').order_by('created_at')
+        
+        html_parts = ['<div style="max-height: 500px; overflow-y: auto; padding: 10px; '
+                      'background: #f9fafb; border-radius: 8px;">']
+        
+        for msg in messages_qs:
+            is_staff = msg.sender.is_staff if msg.sender else False
+            sender_name = msg.sender.get_full_name() or msg.sender.username if msg.sender else "Unknown"
+            timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M")
+            
+            if is_staff:
+                html_parts.append(
+                    f'<div style="display: flex; justify-content: flex-end; margin-bottom: 12px;">'
+                    f'<div style="background: #3b82f6; color: white; padding: 10px 14px; '
+                    f'border-radius: 12px 12px 0 12px; max-width: 70%;">'
+                    f'<div style="font-size: 11px; opacity: 0.8; margin-bottom: 4px;">'
+                    f'👤 {sender_name} (Support) • {timestamp}</div>'
+                    f'<div>{msg.content}</div>'
+                    f'</div></div>'
+                )
+            else:
+                html_parts.append(
+                    f'<div style="display: flex; justify-content: flex-start; margin-bottom: 12px;">'
+                    f'<div style="background: #e5e7eb; color: #1f2937; padding: 10px 14px; '
+                    f'border-radius: 12px 12px 12px 0; max-width: 70%;">'
+                    f'<div style="font-size: 11px; color: #6b7280; margin-bottom: 4px;">'
+                    f'👤 {sender_name} • {timestamp}</div>'
+                    f'<div>{msg.content}</div>'
+                    f'</div></div>'
+                )
+        
+        if not messages_qs.exists():
+            html_parts.append('<p style="color: #6b7280; text-align: center;">No messages yet.</p>')
+        
+        html_parts.append('</div>')
+        
+        # Add reply form
+        html_parts.append('''
+            <div style="margin-top: 20px; padding: 15px; background: #f0f9ff; border-radius: 8px; border: 1px solid #bae6fd;">
+                <h4 style="margin-top: 0; color: #0369a1;">💬 Send Reply</h4>
+                <p style="font-size: 12px; color: #6b7280;">To reply, add a new Support Message below with yourself as sender.</p>
+            </div>
+        ''')
+        
+        return format_html(''.join(html_parts))
+    conversation_display.short_description = "Conversation"
 
 
 @admin.register(SupportMessage)
