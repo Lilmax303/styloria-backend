@@ -243,16 +243,16 @@ class UserSerializer(serializers.ModelSerializer):
         country_name = validated_data.get("country_name") or ""
         city_name = validated_data.get("city_name") or ""
         validated_data["country_code"] = generate_location_code(country_name)
-            if not validated_data["country_code"]:
-                raise serializers.ValidationError({"country_name": "Could not generate country code from country name."})
+        if not validated_data["country_code"]:
+            raise serializers.ValidationError({"country_name": "Could not generate country code from country name."})
  
-            # city_name is optional — use "NN" (Not provided) if skipped
-            # Apple guideline 5.1.1(v): city/state cannot be required
-            if city_name:
-                generated_city_code = generate_location_code(city_name)
-                validated_data["city_code"] = generated_city_code if generated_city_code else "NN"
-            else:
-                validated_data["city_code"] = "NN"
+        # city_name is optional — use "NN" (Not provided) if skipped
+        # Apple guideline 5.1.1(v): city/state cannot be required
+        if city_name:
+            generated_city_code = generate_location_code(city_name)
+            validated_data["city_code"] = generated_city_code if generated_city_code else "NN"
+        else:
+            validated_data["city_code"] = "NN"
 
         # Store detected location info
         if detected_country:
