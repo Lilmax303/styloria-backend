@@ -558,8 +558,6 @@ class CustomUser(AbstractUser):
                 missing.append("date_of_birth")
             if not (self.country_name or "").strip():
                 missing.append("country_name")
-            if not (self.city_name or "").strip():
-                missing.append("city_name")
             if self.accepted_terms is not True:
                 missing.append("accepted_terms")
 
@@ -602,8 +600,8 @@ class CustomUser(AbstractUser):
             return False
         if not _normalize_country_code(self.country_code):
             return False
-        if not _normalize_city_code(self.city_code):
-            return False
+        # city_code is optional — "NN" is used as fallback when not provided
+        # This allows Styloria ID generation even without city
         return True
 
     def _assign_membership_and_styloria_id(self):
@@ -616,7 +614,9 @@ class CustomUser(AbstractUser):
             )
 
         self.country_code = _normalize_country_code(self.country_code)
-        self.city_code = _normalize_city_code(self.city_code)
+        # Use "NN" (Not provided) if city_code is missing — Apple 5.1.1(v) compliance
+        normalized_city = _normalize_city_code(self.city_code)
+        self.city_code = normalized_city if normalized_city else "NN"
 
         if self.age_at_signup is None:
             signup_date = timezone.localdate()
@@ -688,6 +688,11 @@ class CustomUser(AbstractUser):
         if (not (self.city_code or "").strip()) and (self.city_name or "").strip():
             self.city_code = generate_location_code(self.city_name)
 
+        # If city_code is still empty after code generation (city was skipped),
+        # assign "NN" so styloria_id generation can proceed
+        if not (self.city_code or "").strip():
+            self.city_code = "NN"
+
         # Freeze after ID exists (unless superuser edits)
         if self.pk and self.styloria_id and not self.is_superuser:
             old = CustomUser.objects.filter(pk=self.pk).only(
@@ -697,11 +702,18 @@ class CustomUser(AbstractUser):
                 if (old.country_name or "") != (self.country_name or ""):
                     raise ValidationError({"country_name": "country_name cannot be changed after styloria_id is generated."})
                 if (old.city_name or "") != (self.city_name or ""):
-                    raise ValidationError({"city_name": "city_name cannot be changed after styloria_id is generated."})
+                    # Allow city_name update ONLY if it was previously empty/None (user skipped during signup)
+                    # Once a real city_name is set, it cannot be changed
+                    old_city_was_empty = not (old.city_name or "").strip()
+                    if not old_city_was_empty:
+                        raise ValidationError({"city_name": "city_name cannot be changed after styloria_id is generated."})
                 if (old.country_code or "") != (self.country_code or ""):
                     raise ValidationError({"country_code": "country_code cannot be changed after styloria_id is generated."})
                 if (old.city_code or "") != (self.city_code or ""):
-                    raise ValidationError({"city_code": "city_code cannot be changed after styloria_id is generated."})
+                    # Allow city_code update from "NN" to real code (user adds city later from profile)
+                    old_city_code_was_nn = (old.city_code or "").upper() == "NN"
+                    if not old_city_code_was_nn:
+                        raise ValidationError({"city_code": "city_code cannot be changed after styloria_id is generated."})
 
         # Currency detection (signup-based) — keep it lightweight
         try:
