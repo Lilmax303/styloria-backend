@@ -545,6 +545,12 @@ class CustomUser(AbstractUser):
         """
         Enforce required signup fields for normal public signups.
         Superusers created via CLI can bypass and fill later.
+        
+        ✅ FIX: date_of_birth REMOVED from required fields.
+        Apple Guideline 5.1.1(v) — DOB cannot be required.
+        If provided, age is validated in the serializer.
+        If not provided, styloria_id generation is deferred until
+        the user optionally adds it later from their profile.
         """
         super().clean()
 
@@ -554,8 +560,11 @@ class CustomUser(AbstractUser):
                 missing.append("first_name")
             if not (self.last_name or "").strip():
                 missing.append("last_name")
-            if not self.date_of_birth:
-                missing.append("date_of_birth")
+            # ═══════════════════════════════════════════════════
+            # ✅ REMOVED: date_of_birth is no longer required
+            # Was: if not self.date_of_birth:
+            #          missing.append("date_of_birth")
+            # ═══════════════════════════════════════════════════
             if not (self.country_name or "").strip():
                 missing.append("country_name")
             if self.accepted_terms is not True:
