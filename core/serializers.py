@@ -81,21 +81,16 @@ class UserSerializer(serializers.ModelSerializer):
     needs_kyc = serializers.SerializerMethodField()
     provider_verification_status = serializers.SerializerMethodField()
 
-    # ═══════════════════════════════════════════════════════════
-    # ✅ FIX: Explicitly declare date_of_birth as optional
-    # Apple Guideline 5.1.1(v) — DOB cannot be required
-    # ═══════════════════════════════════════════════════════════
+    # ✅ DOB optional — Apple Guideline 5.1.1(v)
     date_of_birth = OptionalDateField(
         required=False,
         allow_null=True,
         default=None,
     )
 
-    # Write-only fields for signup location tracking
     detected_country = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
     country_mismatch = serializers.BooleanField(write_only=True, required=False, default=False)
 
-    # Referral fields
     referral_code = serializers.CharField(read_only=True)
     referral_credits = serializers.IntegerField(read_only=True)
     total_referrals = serializers.IntegerField(read_only=True)
@@ -165,8 +160,19 @@ class UserSerializer(serializers.ModelSerializer):
             "profile_picture_url": {"read_only": True},
         }
 
-    # get_profile_picture_url stays the same...
-    # _validate_password stays the same...
+    def get_profile_picture_url(self, obj):
+        if obj.profile_picture:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.profile_picture.url)
+            return obj.profile_picture.url
+        return None
+
+    def _validate_password(self, password):
+        try:
+            validate_password(password)
+        except DjangoValidationError as e:
+            raise serializers.ValidationError({"password": list(e.messages)})
 
     def validate(self, attrs):
         request = self.context.get("request")
@@ -202,19 +208,7 @@ class UserSerializer(serializers.ModelSerializer):
             if not (attrs.get("last_name") or "").strip():
                 raise serializers.ValidationError({"last_name": "Last name is required."})
 
-            # ═══════════════════════════════════════════════════════════
-            # ✅ FIX: DOB is now optional — only validate age IF provided
-            # Apple Guideline 5.1.1(v): date_of_birth cannot be required
-            #
-            # BEFORE (removed):
-            #   dob = attrs.get("date_of_birth")
-            #   if dob is None:
-            #       raise serializers.ValidationError(...)
-            #   if calculate_age(dob) < 18:
-            #       raise serializers.ValidationError(...)
-            #
-            # AFTER:
-            # ═══════════════════════════════════════════════════════════
+            # ✅ FIX: DOB optional — only validate age if provided
             dob = attrs.get("date_of_birth")
             if dob is not None:
                 if calculate_age(dob) < 18:
@@ -257,8 +251,105 @@ class UserSerializer(serializers.ModelSerializer):
 
         return attrs
 
-    # create, update, get_provider_verification_status, get_needs_kyc 
-    # ALL STAY EXACTLY THE SAME — no changes needed
+    # ═══════════════════════════════════════════════════════════
+    # ⚠️  THIS IS THE CRITICAL METHOD THAT WAS LIKELY REMOVED
+    #     It MUST be inside UserSerializer, properly indented
+    # ═══════════════════════════════════════════════════════════
+    def create(self, validated_data):
+        password = validated_data.pop("password", None)
+        validated_data.pop("password_confirm", None)
+        detected_country = validated_data.pop("detected_country", None)
+        country_mismatch = validated_data.pop("country_mismatch", False)
+
+        # Pop referral code BEFORE creating user
+        referred_by_code = validated_data.pop("referred_by_code", None)
+        if referred_by_code:
+            referred_by_code = referred_by_code.strip().upper()
+
+        self._validate_password(password)
+
+        country_name = validated_data.get("country_name") or ""
+        city_name = validated_data.get("city_name") or ""
+        validated_data["country_code"] = generate_location_code(country_name)
+        if not validated_data["country_code"]:
+            raise serializers.ValidationError({"country_name": "Could not generate country code from country name."})
+
+        if city_name:
+            generated_city_code = generate_location_code(city_name)
+            validated_data["city_code"] = generated_city_code if generated_city_code else "NN"
+        else:
+            validated_data["city_code"] = "NN"
+
+        if detected_country:
+            validated_data["detected_country_at_signup"] = detected_country
+        validated_data["country_mismatch_at_signup"] = bool(country_mismatch)
+
+        user = CustomUser(**validated_data)
+        user.set_password(password)
+        user.is_active = True
+
+        if hasattr(user, "email_verified"):
+            user.email_verified = False
+
+        user.save()
+
+        # Process referral if code was provided
+        if referred_by_code:
+            try:
+                referrer = lookup_user_by_referral_code(referred_by_code)
+                if referrer.pk != user.pk:
+                    user.referred_by = referrer
+                    user.save(update_fields=['referred_by'])
+
+                    Referral.objects.create(
+                        referrer=referrer,
+                        referred_user=user,
+                        status='pending'
+                    )
+            except CustomUser.DoesNotExist:
+                pass
+
+        # Auto-create provider profile for providers
+        if (user.role or "").strip().lower() == "provider":
+            ServiceProvider.objects.get_or_create(user=user)
+
+        return user
+
+    def get_provider_verification_status(self, obj):
+        if (obj.role or "").lower() != "provider":
+            return None
+        provider = getattr(obj, "provider_profile", None)
+        return getattr(provider, "verification_status", None) if provider else None
+
+    def get_needs_kyc(self, obj):
+        if (obj.role or "").lower() != "provider":
+            return False
+        provider = getattr(obj, "provider_profile", None)
+        if not provider:
+            return True
+        return provider.verification_status != "approved"
+
+    def update(self, instance, validated_data):
+        request = self.context.get("request")
+        is_superuser_request = bool(
+            request and request.user and request.user.is_authenticated and request.user.is_superuser
+        )
+
+        if not is_superuser_request:
+            validated_data.pop("role", None)
+
+        password = validated_data.pop("password", None)
+        validated_data.pop("password_confirm", None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        if password:
+            self._validate_password(password)
+            instance.set_password(password)
+
+        instance.save()
+        return instance
 
 class UserLocationCodesSerializer(serializers.Serializer):
     country_name = serializers.CharField(required=True)
