@@ -1,10 +1,49 @@
 # core/utils/ms_graph_mail.py
 
+import base64
 import logging
-from django.core.mail import EmailMultiAlternatives
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+TOKEN_URI = "https://oauth2.googleapis.com/token"
+SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+
+
+def _get_gmail_service():
+    """Build Gmail API service using OAuth2 refresh token."""
+    credentials = Credentials(
+        token=None,
+        refresh_token=settings.GMAIL_REFRESH_TOKEN,
+        token_uri=TOKEN_URI,
+        client_id=settings.GMAIL_CLIENT_ID,
+        client_secret=settings.GMAIL_CLIENT_SECRET,
+        scopes=SCOPES,
+    )
+    service = build("gmail", "v1", credentials=credentials)
+    return service
+
+
+def _build_message(from_email, to_email, subject, body_text, html_message=None):
+    """Build a MIME email message."""
+    if html_message:
+        message = MIMEMultipart("alternative")
+        message.attach(MIMEText(body_text, "plain"))
+        message.attach(MIMEText(html_message, "html"))
+    else:
+        message = MIMEText(body_text, "plain")
+
+    message["to"] = to_email
+    message["from"] = from_email
+    message["subject"] = subject
+
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+    return {"raw": raw}
 
 
 def send_email_with_fallback(
@@ -16,7 +55,7 @@ def send_email_with_fallback(
     from_email=None,
 ):
     """
-    Send email using Django's SMTP backend (Gmail).
+    Send email using Gmail API (HTTPS, not SMTP).
 
     Parameters:
     - to_email: Single email string or list of emails
@@ -27,25 +66,19 @@ def send_email_with_fallback(
     - from_email: Optional sender email (defaults to DEFAULT_FROM_EMAIL)
     """
     try:
-        sender_email = from_email or getattr(settings, 'DEFAULT_FROM_EMAIL', None)
-        if not sender_email:
-            raise ValueError("No sender email configured (DEFAULT_FROM_EMAIL)")
+        sender = from_email or settings.DEFAULT_FROM_EMAIL
+        if not sender:
+            raise ValueError("No sender email configured")
 
-        # Handle single recipient or list
+        service = _get_gmail_service()
+
         recipients = [to_email] if isinstance(to_email, str) else list(to_email)
 
-        msg = EmailMultiAlternatives(
-            subject=subject,
-            body=body_text,
-            from_email=sender_email,
-            to=recipients,
-        )
+        for recipient in recipients:
+            msg = _build_message(sender, recipient, subject, body_text, html_message)
+            service.users().messages().send(userId="me", body=msg).execute()
+            logger.info(f"Email sent successfully to {recipient}")
 
-        if html_message:
-            msg.attach_alternative(html_message, "text/html")
-
-        msg.send(fail_silently=False)
-        logger.info(f"Email sent successfully to {recipients}")
         return True
 
     except Exception as e:
