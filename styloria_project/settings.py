@@ -325,7 +325,8 @@ INSTANT_PAYOUT_DAILY_MAX = os.getenv("INSTANT_PAYOUT_DAILY_MAX", "500.00")
 # =============================================================================
 # PLATFORM FEE SETTINGS
 # =============================================================================
-PLATFORM_FEE_PERCENT = os.getenv("PLATFORM_FEE_PERCENT", "0.20")  # 20%
+PLATFORM_FEE_PERCENT = os.getenv("PLATFORM_FEE_PERCENT", "0.15")  # 15% (provider keeps 85%)
+
 
 # Cancellation penalty (applied when user cancels after 7 minutes)
 CANCELLATION_PENALTY_PERCENT = os.getenv("CANCELLATION_PENALTY_PERCENT", "0.10")  # 10%

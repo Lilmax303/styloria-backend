@@ -1404,6 +1404,28 @@ class ServiceRequest(models.Model):
         help_text="Whether the referral credit was refunded after cancellation"
     )
 
+    # ═══════════════════════════════════════════════════════════════════
+    # NEW USER PROMOTIONAL DISCOUNT (5% for first 5 months)
+    # ═══════════════════════════════════════════════════════════════════
+    new_user_discount_applied = models.BooleanField(
+        default=False,
+        help_text="Whether a new user promo discount was applied to this booking"
+    )
+    new_user_discount_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="New user discount percentage applied (default 5%)"
+    )
+    new_user_discount_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Actual new user discount amount in booking currency"
+    )
+
     def refund_referral_credit_if_applicable(self):
         """
         Refund referral credit if booking was cancelled/refunded.

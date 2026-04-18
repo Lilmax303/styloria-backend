@@ -829,6 +829,9 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             "referral_discount_percent",
             "referral_discount_amount",
             "pre_discount_price",
+            "new_user_discount_applied",
+            "new_user_discount_percent",
+            "new_user_discount_amount",
         ]
         # Keep booking/payment truth server-controlled.
         read_only_fields = [

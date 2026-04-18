@@ -747,12 +747,13 @@ except Exception:
 USER_LATE_CANCEL_PENALTY_PERCENT = Decimal("0.10")
 
 # Platform keeps 20% of total paid (service + transportation + service fee)
-PLATFORM_FEE_PERCENT = Decimal(str(getattr(settings, "PLATFORM_FEE_PERCENT", "0.20")))
+PLATFORM_FEE_PERCENT = Decimal(str(getattr(settings, "PLATFORM_FEE_PERCENT", "0.15")))
+
 
 def _compute_split(total_paid: Decimal) -> tuple[Decimal, Decimal]:
     """
     Returns (platform_fee, provider_gross_share) from total paid by requester.
-    Provider gross share = 80% of total paid.
+    Provider gross share = 85% of total paid.
     """
     platform_fee = (total_paid * PLATFORM_FEE_PERCENT).quantize(Decimal("0.01"))
     provider_gross = (total_paid - platform_fee).quantize(Decimal("0.01"))
@@ -975,6 +976,11 @@ def check_provider_arrived(provider_lat, provider_lng, dest_lat, dest_lng):
 REFERRAL_DISCOUNT_PERCENT = Decimal("7.00")  # 7% discount
 REFERRAL_CREDITS_PER_REFERRAL = 5  # 5 discounted bookings per successful referral
 
+# ═══════════════════════════════════════════════════════════════════
+# NEW USER PROMOTIONAL DISCOUNT
+# ═══════════════════════════════════════════════════════════════════
+NEW_USER_DISCOUNT_PERCENT = Decimal("5.00")   # 5% discount
+NEW_USER_PROMO_MONTHS = 5                      # First 5 months after signup
 
 def apply_referral_discount_if_eligible(service_request, user):
     """
@@ -1111,14 +1117,197 @@ def check_and_award_referral_credits(service_request):
     return False
 
 
+# ═══════════════════════════════════════════════════════════════════
+# NEW USER PROMO HELPERS
+# ═══════════════════════════════════════════════════════════════════
+
+def is_new_user_promo_eligible(user):
+    """
+    Check if user is within their first 5 months on the platform.
+    Uses date_joined (inherited from AbstractUser).
+    """
+    if not user or not user.date_joined:
+        return False
+
+    now = timezone.now()
+    joined = user.date_joined
+
+    months_diff = (now.year - joined.year) * 12 + (now.month - joined.month)
+    if now.day < joined.day:
+        months_diff -= 1
+
+    return months_diff < NEW_USER_PROMO_MONTHS
+
+
+def get_new_user_promo_months_remaining(user):
+    """Return how many months remain in the new user promo window."""
+    if not user or not user.date_joined:
+        return 0
+    now = timezone.now()
+    joined = user.date_joined
+    months_diff = (now.year - joined.year) * 12 + (now.month - joined.month)
+    if now.day < joined.day:
+        months_diff -= 1
+    remaining = max(0, NEW_USER_PROMO_MONTHS - months_diff)
+    return remaining
+
+
+def finalize_new_user_discount(service_request, discount_amount, original_price):
+    """
+    Apply the new user promo discount to the service request.
+    No credits to decrement — purely time-based eligibility.
+    Idempotent: won't apply twice.
+    """
+    if service_request.new_user_discount_applied:
+        return False
+
+    with transaction.atomic():
+        sr_locked = ServiceRequest.objects.select_for_update().get(pk=service_request.pk)
+
+        if sr_locked.new_user_discount_applied:
+            return False
+
+        sr_locked.new_user_discount_applied = True
+        sr_locked.new_user_discount_percent = NEW_USER_DISCOUNT_PERCENT
+        sr_locked.new_user_discount_amount = discount_amount
+
+        # Set pre_discount_price if not already set (by referral)
+        if not sr_locked.pre_discount_price:
+            sr_locked.pre_discount_price = original_price
+
+        sr_locked.save(update_fields=[
+            'new_user_discount_applied',
+            'new_user_discount_percent',
+            'new_user_discount_amount',
+            'pre_discount_price',
+        ])
+
+        service_request.refresh_from_db()
+
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════════
+# UNIFIED DISCOUNT CALCULATOR
+# ═══════════════════════════════════════════════════════════════════
+
+def calculate_all_discounts(service_request, user, original_price, use_referral=True):
+    """
+    Calculate all eligible discounts for a booking.
+    Returns a dict with discount details. Does NOT write to DB.
+
+    Both discounts are calculated as % of ORIGINAL price.
+    Combined discount is capped at the platform's 15% share.
+    """
+    result = {
+        'original_price': original_price,
+        'referral_discount_applied': False,
+        'referral_discount_amount': Decimal("0"),
+        'new_user_discount_applied': False,
+        'new_user_discount_amount': Decimal("0"),
+        'total_discount': Decimal("0"),
+        'final_price': original_price,
+    }
+
+    if original_price is None or original_price <= Decimal("0"):
+        return result
+
+    # ── Idempotent: if already applied (payment retry), return current state ──
+    already_referral = service_request.referral_discount_applied
+    already_new_user = service_request.new_user_discount_applied
+
+    if already_referral:
+        result['referral_discount_applied'] = True
+        result['referral_discount_amount'] = service_request.referral_discount_amount or Decimal("0")
+
+    if already_new_user:
+        result['new_user_discount_applied'] = True
+        result['new_user_discount_amount'] = service_request.new_user_discount_amount or Decimal("0")
+
+    if already_referral or already_new_user:
+        # Return stored state — don't recalculate
+        result['total_discount'] = result['referral_discount_amount'] + result['new_user_discount_amount']
+        result['final_price'] = (original_price - result['total_discount']).quantize(Decimal("0.01"))
+        if result['final_price'] <= Decimal("0"):
+            result['final_price'] = original_price
+        return result
+
+    # ── Calculate fresh discounts ──
+    # Referral
+    if use_referral and user.referral_credits > 0:
+        ref_amt = (original_price * REFERRAL_DISCOUNT_PERCENT / Decimal("100")).quantize(Decimal("0.01"))
+        if ref_amt > Decimal("0"):
+            result['referral_discount_applied'] = True
+            result['referral_discount_amount'] = ref_amt
+
+    # New user promo
+    if is_new_user_promo_eligible(user):
+        nu_amt = (original_price * NEW_USER_DISCOUNT_PERCENT / Decimal("100")).quantize(Decimal("0.01"))
+        if nu_amt > Decimal("0"):
+            result['new_user_discount_applied'] = True
+            result['new_user_discount_amount'] = nu_amt
+
+    # ── Cap combined discount at platform share (15%) ──
+    total = result['referral_discount_amount'] + result['new_user_discount_amount']
+    platform_share = (original_price * Decimal("0.15")).quantize(Decimal("0.01"))
+
+    if total > platform_share and total > Decimal("0"):
+        ratio = platform_share / total
+        result['referral_discount_amount'] = (result['referral_discount_amount'] * ratio).quantize(Decimal("0.01"))
+        result['new_user_discount_amount'] = (result['new_user_discount_amount'] * ratio).quantize(Decimal("0.01"))
+        total = result['referral_discount_amount'] + result['new_user_discount_amount']
+
+    result['total_discount'] = total
+    result['final_price'] = (original_price - total).quantize(Decimal("0.01"))
+
+    # Safety: never let final price go to zero or negative
+    if result['final_price'] <= Decimal("0"):
+        result['final_price'] = original_price
+        result['referral_discount_applied'] = False
+        result['new_user_discount_applied'] = False
+        result['referral_discount_amount'] = Decimal("0")
+        result['new_user_discount_amount'] = Decimal("0")
+        result['total_discount'] = Decimal("0")
+
+    return result
+
+
+def finalize_all_discounts(service_request, user, discounts):
+    """
+    Finalize all calculated discounts: write to DB, decrement referral credits.
+    Call AFTER calculate_all_discounts and BEFORE creating payment.
+    """
+    original_price = discounts['original_price']
+
+    # Referral (decrements credit, atomic)
+    if discounts['referral_discount_applied'] and not service_request.referral_discount_applied:
+        finalize_referral_discount(
+            service_request, user,
+            discounts['referral_discount_amount'],
+            original_price,
+        )
+
+    # New user promo (no credits, just flag)
+    if discounts['new_user_discount_applied'] and not service_request.new_user_discount_applied:
+        finalize_new_user_discount(
+            service_request,
+            discounts['new_user_discount_amount'],
+            original_price,
+        )
+
 def _compute_split_with_referral(paid_amount, service_request):
     """
-    Compute platform/provider split accounting for referral discount.
+    Compute platform/provider split accounting for ALL discounts.
     
-    KEY: Provider gets 85% of ORIGINAL price (before discount).
+    KEY: Provider gets 85% of ORIGINAL price (before any discount).
     Platform absorbs the discount from their 15%.
     """
-    if service_request.referral_discount_applied and service_request.pre_discount_price:
+    has_any_discount = (
+        service_request.referral_discount_applied or
+        service_request.new_user_discount_applied
+    )
+
+    if has_any_discount and service_request.pre_discount_price:
         original_price = service_request.pre_discount_price
     else:
         original_price = paid_amount
@@ -5437,23 +5626,16 @@ def create_payment(request):
 
 
     # ═══════════════════════════════════════════════════════════════════
-    # REFERRAL DISCOUNT CHECK
+    # DISCOUNT CHECK (Referral + New User Promo)
     # ═══════════════════════════════════════════════════════════════════
     original_price = amount_source
-    discount_applied = False
-    discount_amount = Decimal("0")
-    
-    # Check if user wants to use referral credit (default: yes if available)
     use_referral = request.data.get("use_referral_credit", True)
+
+    discounts = calculate_all_discounts(service_request, request.user, original_price, use_referral=use_referral)
     
-    if use_referral and request.user.referral_credits > 0:
-        discounted_price, discount_applied, discount_amount = apply_referral_discount_if_eligible(
-            service_request, request.user
-        )
-        if discount_applied:
-            amount_source = discounted_price
-            # Finalize the discount (decrement credits, update booking)
-            finalize_referral_discount(service_request, request.user, discount_amount, original_price)
+    if discounts['total_discount'] > Decimal("0"):
+        finalize_all_discounts(service_request, request.user, discounts)
+        amount_source = discounts['final_price']
 
 
     # ═══════════════════════════════════════════════════════════════════
@@ -5559,10 +5741,13 @@ def create_payment(request):
             "currency": currency,
             "amount": float(final_amount),
             "currency_converted": was_converted,
-            # Referral info
-            "referral_discount_applied": discount_applied,
-            "referral_discount_amount": float(discount_amount) if discount_applied else 0,
-            "original_price": float(original_price) if discount_applied else None,
+            # Discount info
+            "referral_discount_applied": discounts['referral_discount_applied'],
+            "referral_discount_amount": float(discounts['referral_discount_amount']),
+            "new_user_discount_applied": discounts['new_user_discount_applied'],
+            "new_user_discount_amount": float(discounts['new_user_discount_amount']),
+            "total_discount_amount": float(discounts['total_discount']),
+            "original_price": float(original_price) if discounts['total_discount'] > Decimal("0") else None,
         }
     )
 
@@ -5793,7 +5978,7 @@ def stripe_confirm_payment(request):
         if stripe_fee_major is not None:
             sr_locked.stripe_fee_amount = stripe_fee_major
 
-        platform_fee, provider_gross = _compute_split(paid_amount)
+        platform_fee, provider_gross = _compute_split_with_referral(paid_amount, sr_locked)
         sr_locked.platform_fee_amount = platform_fee
         sr_locked.provider_earnings_amount = provider_gross
         sr_locked.provider_net_amount = _compute_provider_net(provider_gross, sr_locked.stripe_fee_amount)
@@ -5986,22 +6171,17 @@ def create_flutterwave_checkout(request):
 
 
     # ═══════════════════════════════════════════════════════════════════
-    # REFERRAL DISCOUNT CHECK
+    # DISCOUNT CHECK (Referral + New User Promo)
     # ═══════════════════════════════════════════════════════════════════
     original_price = amount
-    discount_applied = False
-    discount_amount = Decimal("0")
-    
     use_referral = request.data.get("use_referral_credit", True)
 
-    if use_referral and request.user.referral_credits > 0:
-        discount_amount = (amount * REFERRAL_DISCOUNT_PERCENT / Decimal("100")).quantize(Decimal("0.01"))
-        discounted_price = (amount - discount_amount).quantize(Decimal("0.01"))
-        
-        if discounted_price > Decimal("0"):
-            discount_applied = True
-            amount = discounted_price
-            finalize_referral_discount(sr, request.user, discount_amount, original_price)
+    discounts = calculate_all_discounts(sr, request.user, original_price, use_referral=use_referral)
+    
+    if discounts['total_discount'] > Decimal("0"):
+        finalize_all_discounts(sr, request.user, discounts)
+        amount = discounts['final_price']
+
 
     # Persist the amount user intends to pay
     sr.offered_price = amount
@@ -6036,10 +6216,13 @@ def create_flutterwave_checkout(request):
             "customer_phone": request.user.phone_number or "",
             "customer_name": full_name,
             "redirect_url": settings.FLUTTERWAVE_REDIRECT_URL,
-            # Referral info
-            "referral_discount_applied": discount_applied,
-            "referral_discount_amount": float(discount_amount) if discount_applied else 0,
-            "original_price": float(original_price) if discount_applied else None,
+            # Discount info
+            "referral_discount_applied": discounts['referral_discount_applied'],
+            "referral_discount_amount": float(discounts['referral_discount_amount']),
+            "new_user_discount_applied": discounts['new_user_discount_applied'],
+            "new_user_discount_amount": float(discounts['new_user_discount_amount']),
+            "total_discount_amount": float(discounts['total_discount']),
+            "original_price": float(original_price) if discounts['total_discount'] > Decimal("0") else None,
         },
         status=200,
     )
@@ -6433,22 +6616,17 @@ def create_paystack_checkout(request):
 
 
     # ═══════════════════════════════════════════════════════════════════
-    # REFERRAL DISCOUNT CHECK
+    # DISCOUNT CHECK (Referral + New User Promo)
     # ═══════════════════════════════════════════════════════════════════
     original_price = amount
-    discount_applied = False
-    discount_amount = Decimal("0")
-    
     use_referral = request.data.get("use_referral_credit", True)
 
-    if use_referral and request.user.referral_credits > 0:
-        discount_amount = (amount * REFERRAL_DISCOUNT_PERCENT / Decimal("100")).quantize(Decimal("0.01"))
-        discounted_price = (amount - discount_amount).quantize(Decimal("0.01"))
-        
-        if discounted_price > Decimal("0"):
-            discount_applied = True
-            amount = discounted_price
-            finalize_referral_discount(sr, request.user, discount_amount, original_price)
+    discounts = calculate_all_discounts(sr, request.user, original_price, use_referral=use_referral)
+    
+    if discounts['total_discount'] > Decimal("0"):
+        finalize_all_discounts(sr, request.user, discounts)
+        amount = discounts['final_price']
+
 
     # Get currency for user's country
     currency_u = get_paystack_currency(user_country) or get_currency_for_country(user_country)
@@ -6501,10 +6679,13 @@ def create_paystack_checkout(request):
         "currency": currency_u,
         "amount": float(amount),
         "public_key": getattr(settings, "PAYSTACK_PUBLIC_KEY", ""),
-        # Referral info
-        "referral_discount_applied": discount_applied,
-        "referral_discount_amount": float(discount_amount) if discount_applied else 0,
-        "original_price": float(original_price) if discount_applied else None,
+        # Discount info
+        "referral_discount_applied": discounts['referral_discount_applied'],
+        "referral_discount_amount": float(discounts['referral_discount_amount']),
+        "new_user_discount_applied": discounts['new_user_discount_applied'],
+        "new_user_discount_amount": float(discounts['new_user_discount_amount']),
+        "total_discount_amount": float(discounts['total_discount']),
+        "original_price": float(original_price) if discounts['total_discount'] > Decimal("0") else None,
     }, status=200)
 
 
@@ -6745,7 +6926,7 @@ def _handle_paystack_charge_success(data: dict) -> None:
         if sr_locked.status == "pending":
             sr_locked.status = "open"
         
-        platform_fee, provider_gross = _compute_split(amount_decimal)
+        platform_fee, provider_gross = _compute_split_with_referral(amount_decimal, sr_locked)
         sr_locked.platform_fee_amount = platform_fee
         sr_locked.provider_earnings_amount = provider_gross
         sr_locked.provider_net_amount = provider_gross
@@ -6954,6 +7135,79 @@ def get_referral_discount_preview(request, service_request_id):
         "credits_remaining": user.referral_credits,
         "credits_after_use": user.referral_credits - 1,
     })
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_discount_preview(request, service_request_id):
+    """
+    Preview ALL discounts (referral + new user) for a booking before payment.
+    
+    GET /api/discounts/preview/<service_request_id>/
+    """
+    try:
+        sr = ServiceRequest.objects.get(id=service_request_id, user=request.user)
+    except ServiceRequest.DoesNotExist:
+        return Response({"detail": "Booking not found."}, status=404)
+
+    if sr.payment_status == "paid":
+        return Response({"detail": "Booking already paid."}, status=400)
+
+    original_price = sr.offered_price or sr.estimated_price or Decimal("0")
+    user = request.user
+
+    discounts = calculate_all_discounts(sr, user, original_price, use_referral=True)
+
+    promo_eligible = is_new_user_promo_eligible(user)
+    months_remaining = get_new_user_promo_months_remaining(user)
+
+    return Response({
+        "original_price": float(original_price),
+        # Referral
+        "referral_eligible": user.referral_credits > 0,
+        "referral_discount_percent": float(REFERRAL_DISCOUNT_PERCENT) if user.referral_credits > 0 else 0,
+        "referral_discount_amount": float(discounts['referral_discount_amount']),
+        "referral_credits_remaining": user.referral_credits,
+        # New User Promo
+        "new_user_promo_eligible": promo_eligible,
+        "new_user_discount_percent": float(NEW_USER_DISCOUNT_PERCENT) if promo_eligible else 0,
+        "new_user_discount_amount": float(discounts['new_user_discount_amount']),
+        "new_user_promo_months_remaining": months_remaining,
+        # Combined
+        "total_discount_amount": float(discounts['total_discount']),
+        "final_price": float(discounts['final_price']),
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_new_user_promo_status(request):
+    """
+    GET /api/promotions/new_user_status/
+
+    Returns the user's new user promo eligibility and remaining time.
+    """
+    user = request.user
+    eligible = is_new_user_promo_eligible(user)
+    months_remaining = get_new_user_promo_months_remaining(user)
+
+    return Response({
+        "eligible": eligible,
+        "discount_percent": float(NEW_USER_DISCOUNT_PERCENT) if eligible else 0,
+        "months_remaining": months_remaining,
+        "promo_window_months": NEW_USER_PROMO_MONTHS,
+        "signup_date": user.date_joined.isoformat() if user.date_joined else None,
+        "promo_expires_at": (
+            (user.date_joined + timedelta(days=NEW_USER_PROMO_MONTHS * 30)).isoformat()
+            if user.date_joined and eligible else None
+        ),
+    })
+
+
+
+
+
+
+
 
 
 @csrf_exempt

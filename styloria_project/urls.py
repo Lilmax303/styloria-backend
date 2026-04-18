@@ -75,6 +75,12 @@ urlpatterns = [
     path('api/referral/validate/', views.validate_referral_code, name='validate_referral_code'),
     path('api/referral/discount_preview/<int:service_request_id>/', views.get_referral_discount_preview, name='referral_discount_preview'),
 
+    # Unified Discount Preview
+    path('api/discounts/preview/<int:service_request_id>/', views.get_discount_preview, name='discount_preview'),
+
+    # New User Promo
+    path('api/promotions/new_user_status/', views.get_new_user_promo_status, name='new_user_promo_status'),
+
     # Stripe
     path('api/create_payment/', core_views.create_payment, name='create_payment'),
     path('api/stripe/webhook/', core_views.stripe_webhook, name='stripe_webhook'),
